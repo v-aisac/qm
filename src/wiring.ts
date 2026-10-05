@@ -174,6 +174,7 @@ import {
 import { createIdempotencyStore, type IdempotencyRecord } from "./idempotency/idempotency-store.ts";
 import { isOpenScopeMember } from "./resolution/sharing-access.ts";
 import { createScheduler, type Scheduler } from "./cron/scheduler.ts";
+import { createPgBossWebhookQueue } from "./webhooks/job-queue.ts";
 import { createPgBossCronQueue } from "./cron/job-queue.ts";
 import { createWebhookStore, type WebhookHistory } from "./webhooks/webhook-store.ts";
 import { createWebhookReceiver, type WebhookReceiver } from "./webhooks/webhook-receiver.ts";
@@ -2545,6 +2546,10 @@ export function buildApp(
   });
   const webhookReceiver = createWebhookReceiver({
     webhooks,
+    admittedWork,
+    ...(config.databaseUrl
+      ? { jobQueue: createPgBossWebhookQueue(config.databaseUrl, undefined, config.cronFireConcurrency) }
+      : {}),
     deliveries,
     idempotency,
     identity,

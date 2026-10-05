@@ -290,7 +290,7 @@ export function createPostgresAutomationRunStore(connectionString: string): Auto
       const result = await query(
         `UPDATE cron_fires
             SET status = 'failed', ended_at = $1, note = $2
-          WHERE status IN ('queued', 'running') AND fired_at <= $3`,
+          WHERE status = 'running' AND fired_at <= $3`,
         [now, pgTextSafe(note), now - staleRunningMs],
       );
       return result.rowCount;

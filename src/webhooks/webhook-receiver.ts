@@ -1,19 +1,35 @@
+import type { AutomationJobQueue } from "../triggers/job-queue.ts";
+import type { AdmittedWork } from "../util/admitted-work.ts";
 import { runRecordedTrigger } from "../triggers/run-record.ts";
 import type { Destination, Webhook } from "../types.ts";
 import type { WebhookStore } from "./webhook-store.ts";
 import { getVerifier, type VerifierInput } from "./verifiers.ts";
 import { type TriggerDeps } from "../triggers/run-trigger.ts";
 import { buildWebhookWakeEnvelope, capForEscaping } from "../core/wake-envelope.ts";
-import { errMessage, reportFailure } from "../util/errors.ts";
+import { reportFailure } from "../util/errors.ts";
 
 export type DeliverResult = { status: 202 } | { status: 200; body: string } | { status: 401 } | { status: 404 };
 
+export interface WebhookFireJob {
+  webhookId: string;
+  deliveryId: string;
+  receivedAt: number;
+  input: string;
+  payload: string;
+}
+
 export interface WebhookReceiver {
+  start(): Promise<void>;
+  stopClaims(): Promise<void>;
+  drained(): Promise<void>;
+  stop(): Promise<void>;
   deliver(id: string, req: { headers: VerifierInput["headers"]; rawBody: string }): Promise<DeliverResult>;
 }
 
 export interface WebhookReceiverDeps extends TriggerDeps {
   webhooks: WebhookStore;
+  jobQueue?: AutomationJobQueue<WebhookFireJob>;
+  admittedWork?: AdmittedWork;
 }
 
 const MAX_EVENT_CHARS = 16_000;
@@ -47,26 +63,10 @@ function passesFilters(filters: Webhook["filters"], parsed: unknown): boolean {
   });
 }
 
-function renderEvent(
-  wh: Webhook,
-  deliveryId: string,
-  parsed: unknown,
-  rawBody: string,
-): { input: string; securityScreenData: string } {
+function renderPayload(parsed: unknown, rawBody: string): string {
   const pretty = isObj(parsed) || Array.isArray(parsed) ? JSON.stringify(parsed, null, 2) : rawBody;
   const kept = capForEscaping(pretty, MAX_EVENT_CHARS, "head");
-  const capped = kept.length < pretty.length ? `${kept}\n…[truncated]` : kept;
-  return {
-    input: buildWebhookWakeEnvelope({
-      webhookId: wh.id,
-      scheme: wh.verification.scheme,
-      deliveryId,
-      at: new Date(),
-      action: wh.action,
-      payload: capped,
-    }),
-    securityScreenData: capped,
-  };
+  return kept.length < pretty.length ? `${kept}\n…[truncated]` : kept;
 }
 
 export function createWebhookReceiver(deps: WebhookReceiverDeps): WebhookReceiver {
@@ -77,9 +77,97 @@ export function createWebhookReceiver(deps: WebhookReceiverDeps): WebhookReceive
     run: deps.run,
     ...(deps.directory ? { directory: deps.directory } : {}),
     ...(deps.currentScopeMembers ? { currentScopeMembers: deps.currentScopeMembers } : {}),
+    ...(deps.sessions ? { sessions: deps.sessions } : {}),
   };
 
+  const pending = new Set<Promise<void>>();
+  async function fire(job: WebhookFireJob) {
+    const wh = await deps.webhooks.get(job.webhookId);
+    const fireKey = `webhook:${job.webhookId}:${job.deliveryId}`;
+    if (!wh || !wh.enabled || wh.archived) {
+      await deps.webhooks.finishFire(job.webhookId, {
+        fireKey,
+        threadRef: fireKey,
+        firedAt: job.receivedAt,
+        endedAt: Date.now(),
+        status: "refused",
+        note: "Webhook disabled, archived, or deleted before execution",
+        deliveryId: job.deliveryId,
+        payload: job.payload,
+      });
+      return;
+    }
+    const deliveryId = job.deliveryId;
+    const destination: Destination | undefined = wh.destination;
+    const outcome = await runRecordedTrigger(
+      triggerDeps,
+      {
+        owner: wh.owner,
+        ownerScopeId: wh.ownerScopeId,
+        input: job.input,
+        securityScreenData: job.payload,
+        fireKey,
+        surface: "webhook",
+        ...(destination ? { destination } : {}),
+        recipientConsentRequired: true,
+        ...(wh.recipientConsent ? { recipientConsent: wh.recipientConsent } : {}),
+        errorNotice: (s) => `⚠️ Webhook did not complete: ${s}`,
+      },
+      {
+        entry: {
+          fireKey,
+          threadRef: fireKey,
+          firedAt: job.receivedAt,
+          status: "running",
+          payload: job.payload,
+          deliveryId,
+        },
+        begin: (entry) => deps.webhooks.beginFire(wh.id, entry),
+        record: (entry) => deps.webhooks.finishFire(wh.id, entry),
+        now: Date.now,
+      },
+    );
+
+    if (!outcome.ran && !outcome.authzFailed) return;
+    if (outcome.authzFailed) {
+      await deps.webhooks.setEnabled(wh.id, false);
+      await deps.webhooks.recordFire(wh.id, { at: Date.now(), error: outcome.note ?? "fail-closed" });
+      return;
+    }
+    await deps.webhooks.recordFire(wh.id, {
+      at: Date.now(),
+      deliveryId,
+      ...(outcome.note ? { error: outcome.note } : {}),
+    });
+  }
+  function trackedFire(job: WebhookFireJob) {
+    const work = deps.admittedWork ? deps.admittedWork.run(() => fire(job)) : fire(job);
+    pending.add(work);
+    void work.finally(() => pending.delete(work)).catch(() => {});
+    return work;
+  }
+  let starting: Promise<void> | undefined;
   return {
+    start() {
+      return (starting ??=
+        deps.jobQueue?.start({ onFire: trackedFire }).catch((error) => {
+          starting = undefined;
+          throw error;
+        }) ?? Promise.resolve());
+    },
+    async stopClaims() {
+      await starting?.catch(() => {});
+      await deps.jobQueue?.stopClaims?.();
+      starting = undefined;
+    },
+    async drained() {
+      while (pending.size) await Promise.allSettled(pending);
+    },
+    async stop() {
+      await this.stopClaims();
+      await this.drained();
+      await deps.jobQueue?.stop();
+    },
     async deliver(id, req) {
       const wh = await deps.webhooks.get(id);
       if (!wh || !wh.enabled || wh.archived) return { status: 404 };
@@ -105,63 +193,30 @@ export function createWebhookReceiver(deps: WebhookReceiverDeps): WebhookReceive
       const fireKey = `webhook:${wh.id}:${deliveryId}`;
       if (await deps.idempotency.committed(fireKey)) return { status: 200, body: "duplicate" };
 
-      const event = renderEvent(wh, deliveryId, parsed, req.rawBody);
-      const destination: Destination | undefined = wh.destination;
+      const payload = renderPayload(parsed, req.rawBody);
       const receivedAt = Date.now();
       const receipt = await deps.webhooks.recordEvent(wh.id, {
         deliveryId,
         receivedAt,
-        payload: event.securityScreenData,
+        payload,
       });
 
-      void runRecordedTrigger(
-        triggerDeps,
-        {
-          owner: wh.owner,
-          ownerScopeId: wh.ownerScopeId,
-          input: event.input,
-          securityScreenData: event.securityScreenData,
-          fireKey,
-          surface: "webhook",
-          ...(destination ? { destination } : {}),
-          recipientConsentRequired: true,
-          ...(wh.recipientConsent ? { recipientConsent: wh.recipientConsent } : {}),
-          errorNotice: (s) => `⚠️ Webhook did not complete: ${s}`,
-        },
-        {
-          entry: {
-            fireKey,
-            threadRef: fireKey,
-            firedAt: receipt.receivedAt,
-            status: "running",
-            payload: receipt.payload,
-            deliveryId,
-          },
-          begin: (entry) => deps.webhooks.beginFire(wh.id, entry),
-          record: (entry) => deps.webhooks.finishFire(wh.id, entry),
-          now: Date.now,
-        },
-      )
-        .then(async (outcome) => {
-          if (!outcome.ran && !outcome.authzFailed) return;
-          if (outcome.authzFailed) {
-            await deps.webhooks.setEnabled(wh.id, false);
-            await deps.webhooks.recordFire(wh.id, { at: Date.now(), error: outcome.note ?? "fail-closed" });
-            return;
-          }
-          await deps.webhooks.recordFire(wh.id, {
-            at: Date.now(),
-            deliveryId,
-            ...(outcome.note ? { error: outcome.note } : {}),
-          });
-        })
-        .catch(async (e: unknown) => {
-          const msg = errMessage(e);
-          await deps.webhooks
-            .recordFire(wh.id, { at: Date.now(), error: msg })
-            .catch((error: unknown) => reportFailure("webhook: completion record", error));
-          reportFailure("webhook: fire", e, `webhook=${wh.id}`);
-        });
+      const job: WebhookFireJob = {
+        webhookId: wh.id,
+        deliveryId,
+        receivedAt: receipt.receivedAt,
+        input: buildWebhookWakeEnvelope({
+          webhookId: wh.id,
+          scheme: wh.verification.scheme,
+          deliveryId,
+          at: new Date(receipt.receivedAt),
+          action: wh.action,
+          payload: receipt.payload,
+        }),
+        payload: receipt.payload,
+      };
+      if (deps.jobQueue) await deps.jobQueue.enqueueFire(job);
+      else void trackedFire(job).catch((error: unknown) => reportFailure("webhook: fire", error, `webhook=${wh.id}`));
 
       return { status: 202 };
     },

@@ -435,3 +435,35 @@ test("archived webhooks reject deliveries and enabling them restores cron-style 
   await flush();
   assert.equal(calls.length, 1);
 });
+
+test("a failed durable enqueue is not acknowledged and never falls back to inline execution", async () => {
+  const webhooks = createWebhookStore();
+  const wh = await webhooks.create({
+    owner: "U1",
+    createdBy: "U1",
+    ownerScopeId: scopeId("personal", "U1"),
+    action: "review",
+    verification: { scheme: "github", secret: SECRET },
+  });
+  let calls = 0;
+  const receiver = createWebhookReceiver({
+    webhooks,
+    deliveries: createDeliveryStore(),
+    idempotency: createIdempotencyStore(),
+    identity: createIdentityService(),
+    run: async () => {
+      calls++;
+      return { status: "ok" };
+    },
+    jobQueue: {
+      start: async () => {},
+      enqueueFire: async () => {
+        throw new Error("database unavailable");
+      },
+      healthy: () => false,
+      stop: async () => {},
+    },
+  });
+  await assert.rejects(receiver.deliver(wh.id, githubReq("{}")), /database unavailable/);
+  assert.equal(calls, 0);
+});

@@ -327,7 +327,7 @@ test(
   },
 );
 
-test("pg shared runs: cron recovery closes stranded webhook receipts and retains their inputs", { skip }, async () => {
+test("pg shared runs: cron recovery preserves waiting webhook jobs and their inputs", { skip }, async () => {
   const fires = createPostgresCronFireStore(URL!);
   await fires.accept("webhook:stranded", {
     fireKey: "queued",
@@ -340,7 +340,7 @@ test("pg shared runs: cron recovery closes stranded webhook receipts and retains
   const crons = createCronStore(undefined, { fires, staleRunningMs: 100 });
   await crons.sweepStrandedFires(500);
   const run = (await fires.listByCron("webhook:stranded")).runs[0]!;
-  assert.equal(run.status, "failed");
-  assert.equal(run.endedAt, 500);
+  assert.equal(run.status, "queued");
+  assert.equal(run.endedAt, undefined);
   assert.equal(run.payload, "original event");
 });
