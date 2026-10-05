@@ -3,9 +3,10 @@ qm-slack-reply {
   flex: none;
 }
 .slack-reply-box {
-  max-width: 860px;
+  width: min(var(--content-w), 100%);
+  box-sizing: border-box;
   margin: 0 auto;
-  padding: 12px 24px 20px;
+  padding: 12px var(--composer-inset) 20px;
 }
 .slack-reply-box .welcome-slack {
   max-width: none;

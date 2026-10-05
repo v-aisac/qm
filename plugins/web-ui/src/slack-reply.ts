@@ -8,6 +8,7 @@ export class SlackReply extends LitElement {
     sessionId: {},
     user: {},
     connected: { state: true },
+    linkRequired: { state: true },
     loading: { state: true },
     sending: { state: true },
     error: { state: true },
@@ -18,6 +19,7 @@ export class SlackReply extends LitElement {
   sessionId = "";
   user = "";
   private connected = false;
+  private linkRequired = false;
   private loading = true;
   private sending = false;
   private error = "";
@@ -45,10 +47,12 @@ export class SlackReply extends LitElement {
       const response = await this.request("reply-status");
       const result = await response.json();
       this.connected = response.ok && result.connected === true;
+      this.linkRequired = response.ok && result.connected === false;
       this.label = result.user ?? "yourself";
       this.error = response.ok ? "" : (result.message ?? "Could not check your Slack connection.");
     } catch {
       this.connected = false;
+      this.linkRequired = false;
       this.error = "Could not check your Slack connection.";
     } finally {
       this.loading = false;
@@ -72,7 +76,10 @@ export class SlackReply extends LitElement {
       const response = await this.request("reply", { text: this.text, clientMessageId: crypto.randomUUID() });
       const result = await response.json();
       if (!response.ok || !result.sent) {
-        if (result.connected === false) this.connected = false;
+        if (result.connected === false) {
+          this.connected = false;
+          this.linkRequired = true;
+        }
         this.error = result.message ?? "Could not send your Slack message.";
         return;
       }
@@ -113,9 +120,10 @@ export class SlackReply extends LitElement {
                 </button>
               </div>
             </form>`
-          : html`<qm-slack-account .user=${this.user} .reply=${true} @slack-linked=${this.refresh}></qm-slack-account>`
+          : nothing
       }
-      ${this.error ? html`<p class="slack-account-error" role="alert">${this.error} <button class="btn" @click=${this.refresh}>Check connection</button></p>` : nothing}
+      ${this.linkRequired ? html`<qm-slack-account .user=${this.user} .reply=${true} @slack-linked=${this.refresh}></qm-slack-account>` : nothing}
+      ${this.error && !this.linkRequired ? html`<p class="slack-account-error" role="alert">${this.error} <button class="btn" @click=${this.refresh}>Check connection</button></p>` : nothing}
     </div>`;
   }
 }

@@ -90,6 +90,7 @@ test("mounted read-only conversations display webhook payloads as text and assis
         assert.match(document.querySelector(".webhook-event pre")!.textContent!, /<script>alert/);
         assert.equal(document.querySelector(".webhook-event script"), null);
       } else {
+        assert.equal(document.querySelector(".slack-wire-text")!.textContent, "Check the build");
         assert.equal(document.querySelectorAll(".user-row").length, 2);
         assert.equal(document.querySelectorAll(".assistant-row").length, 2);
       }
