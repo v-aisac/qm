@@ -1,0 +1,40 @@
+qm-slack-reply {
+  display: block;
+  flex: none;
+}
+.slack-reply-box {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 12px 24px 20px;
+}
+.slack-reply-box .welcome-slack {
+  max-width: none;
+  margin-bottom: 0;
+}
+.slack-reply-box label {
+  display: block;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+.slack-reply-box textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  max-height: 180px;
+  font: inherit;
+  padding: 12px;
+  color: var(--foreground);
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+.slack-reply-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--muted-foreground);
+}

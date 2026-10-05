@@ -22,12 +22,14 @@ export function captureSlackReturn(url: string): void {
 export class SlackAccount extends LitElement {
   static properties = {
     user: {},
+    reply: { type: Boolean },
     busy: { state: true },
     error: { state: true },
     connected: { state: true },
     label: { state: true },
   };
   user = "";
+  reply = false;
   private busy = false;
   private error = "";
   private connected = false;
@@ -152,6 +154,7 @@ export class SlackAccount extends LitElement {
       this.connected = true;
       this.label = [result.user, result.workspace].filter(Boolean).join(" · ");
       this.clearAttempt();
+      this.dispatchEvent(new CustomEvent("slack-linked", { bubbles: true }));
     } catch (error) {
       this.error = error instanceof Error ? error.message : "Could not verify your Slack account.";
     } finally {
@@ -162,7 +165,7 @@ export class SlackAccount extends LitElement {
   protected render() {
     return html`<section class="slack-account" aria-label="Your Slack account">
       ${
-        this.connected
+        this.connected && !this.reply
           ? html`<div class="slack-connected" role="status">
               ${icon(Check, 14)}<span>Your Slack account is linked${this.label ? ` · ${this.label}` : ""}</span>
             </div>`
@@ -174,7 +177,9 @@ export class SlackAccount extends LitElement {
               </div>
               <span
                 ><strong>${this.busy ? "Linking Slack…" : "Link your Slack account"}</strong
-                ><small>Let QM search Slack and take action on your behalf.</small></span
+                ><small
+                  >${this.reply ? "Send replies here as yourself in Slack." : "Let QM search Slack and take action on your behalf."}</small
+                ></span
               >
               ${icon(ArrowUpRight, 16)}
             </button>`

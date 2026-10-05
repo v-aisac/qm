@@ -20,6 +20,7 @@ function fixture() {
     key: deriveConnectorKey("composio-test"),
   });
   const acl = createAclStore();
+  const app = { getSessionForViewer: async (_id: string, _viewer: string): Promise<unknown> => null };
   const calls: Array<{ url: string; init?: RequestInit }> = [];
   const replies: unknown[] = [];
   const deps: Partial<ServerDeps> = {
@@ -45,7 +46,13 @@ function fixture() {
       return Response.json(result);
     }) as typeof fetch,
   };
-  async function invoke(path: string, body?: unknown, actor: string | null = "alice", capability?: CapabilityClaims) {
+  async function invoke(
+    path: string,
+    body?: unknown,
+    actor: string | null = "alice",
+    capability?: CapabilityClaims,
+    impersonating = false,
+  ) {
     let status = 0;
     let text = "";
     const url = new URL(path, "http://localhost");
@@ -61,11 +68,12 @@ function fixture() {
     } as unknown as ServerResponse;
     const ctx = {
       deps,
+      app,
       res,
       url,
       body,
       capability,
-      actor: actor ? { p: actor, exp: Date.now() + 60_000 } : null,
+      actor: actor ? { p: actor, exp: Date.now() + 60_000, ...(impersonating ? { imp: "admin" } : {}) } : null,
     } as ApiCtx;
     const route = composioRoutes.find((r) => "path" in r && r.path === url.pathname)!;
     await route.handle(ctx);
@@ -94,7 +102,7 @@ function fixture() {
         grantedBy: "admin",
       });
   }
-  return { invoke, own, shared, calls, replies, deps };
+  return { invoke, own, shared, calls, replies, deps, app };
 }
 
 test("Composio requires a verified actor and never uses another person's key", async () => {
@@ -838,4 +846,125 @@ test("authorization failures keep a redacted upstream cause for operators", asyn
   assert.match(report, /toolkit not enabled/);
   assert.match(report, /req_123/);
   assert.doesNotMatch(report, /private-key|sk-other/);
+});
+
+async function slackReplyFixture() {
+  const f = fixture();
+  await f.own();
+  f.app.getSessionForViewer = async (id, viewer) =>
+    id === "session" && viewer === "alice" ? { session: { threadRef: "ch:C123:123.456" } } : null;
+  f.deps.slackAccounts = createMemoryMap();
+  await f.deps.slackAccounts.put("alice", {
+    principalId: "alice",
+    memberId: "alice",
+    accountId: "ca_alice",
+    userId: "U123",
+    teamId: "T123",
+    user: "Alice",
+    workspace: "Test",
+  });
+  const account = {
+    id: "ca_alice",
+    user_id: composioUserId(orgId(), "alice"),
+    toolkit: { slug: "slack" },
+    status: "ACTIVE",
+  };
+  const identity = { data: { ok: true, user_id: "U123", team_id: "T123" } };
+  const message = { sessionId: "session", text: "Hello", clientMessageId: "01234567-0123-4123-8123-012345678901" };
+  return { ...f, account, identity, message };
+}
+
+test("Slack replies use only the viewer's verified user connection and server-side thread destination", async () => {
+  const f = await slackReplyFixture();
+  f.replies.push(f.account, f.identity, { data: { ok: true } }, { data: { ok: true, ts: "123.789" } });
+  const result = await f.invoke("/v1/composio/slack/reply", {
+    ...f.message,
+    channel: "CATTACK",
+    accountId: "ca_other",
+  });
+  assert.equal(result.status, 200);
+  assert.equal(result.data.sent, true);
+  const request = JSON.parse(String(f.calls.at(-1)!.init!.body));
+  assert.equal(request.connected_account_id, "ca_alice");
+  assert.equal(request.endpoint, "https://slack.com/api/chat.postMessage");
+  assert.deepEqual(request.body, {
+    channel: "C123",
+    thread_ts: "123.456",
+    text: "Hello",
+    client_msg_id: f.message.clientMessageId,
+    as_user: true,
+    unfurl_links: false,
+    unfurl_media: false,
+  });
+});
+
+test("Slack reply status verifies personal access without posting", async () => {
+  const f = await slackReplyFixture();
+  f.replies.push(f.account, f.identity, { data: { ok: true } });
+  assert.equal((await f.invoke("/v1/composio/slack/reply-status", f.message)).data.connected, true);
+  assert.equal(f.calls.length, 3);
+});
+
+test("Slack replies cannot target hidden sessions or accept blank messages", async () => {
+  const f = await slackReplyFixture();
+  assert.equal((await f.invoke("/v1/composio/slack/reply", { ...f.message, sessionId: "hidden" })).status, 404);
+  assert.equal((await f.invoke("/v1/composio/slack/reply", { ...f.message, text: " " })).status, 400);
+  assert.equal((await f.invoke("/v1/composio/slack/reply", f.message, null)).status, 403);
+  assert.equal(f.calls.length, 0);
+});
+
+test("Slack replies require a linked user account and never fall back to the bot token", async () => {
+  const f = await slackReplyFixture();
+  await f.deps.slackAccounts!.delete("alice");
+  f.deps.slackEnvBotToken = "must-not-use";
+  assert.equal((await f.invoke("/v1/composio/slack/reply-status", f.message)).data.connected, false);
+  assert.equal((await f.invoke("/v1/composio/slack/reply", f.message)).status, 409);
+  assert.equal(f.calls.length, 0);
+});
+
+for (const [label, accountPatch, identityPatch] of [
+  ["another owner", { user_id: "other" }, {}],
+  ["revoked connection", { status: "REVOKED" }, {}],
+  ["bot token", {}, { bot_id: "B123" }],
+  ["another user", {}, { user_id: "UOTHER" }],
+  ["another workspace", {}, { team_id: "TOTHER" }],
+] as const)
+  test(`Slack replies reject ${label}`, async () => {
+    const f = await slackReplyFixture();
+    f.replies.push({ ...f.account, ...accountPatch }, { data: { ...f.identity.data, ...identityPatch } });
+    assert.equal((await f.invoke("/v1/composio/slack/reply", f.message)).status, 409);
+    assert.ok(f.calls.length <= 2);
+  });
+
+test("Slack replies preserve an uncertain send result without retrying", async () => {
+  const f = await slackReplyFixture();
+  f.replies.push(f.account, f.identity, { data: { ok: true } }, new Error("timeout"));
+  const result = await f.invoke("/v1/composio/slack/reply", f.message);
+  assert.equal(result.status, 502);
+  assert.match(result.data.message, /outcome is unknown/);
+  assert.equal(f.calls.length, 4);
+});
+
+test("Slack replies stop when the personal account cannot access the conversation", async () => {
+  const f = await slackReplyFixture();
+  f.replies.push(f.account, f.identity, { data: { ok: false, error: "channel_not_found" } });
+  assert.equal((await f.invoke("/v1/composio/slack/reply", f.message)).status, 403);
+  assert.equal(f.calls.length, 3);
+});
+
+test("Slack replies reject impersonation and agent capabilities", async () => {
+  const f = await slackReplyFixture();
+  assert.equal((await f.invoke("/v1/composio/slack/reply", f.message, "alice", undefined, true)).status, 403);
+  assert.equal((await f.invoke("/v1/composio/slack/reply", f.message, "alice", {} as CapabilityClaims)).status, 403);
+  assert.equal(f.calls.length, 0);
+});
+
+test("Slack replies preserve unthreaded DMs and report Slack permission failures", async () => {
+  const f = await slackReplyFixture();
+  f.app.getSessionForViewer = async () => ({ session: { threadRef: "dm:D123" } });
+  f.replies.push(f.account, f.identity, { data: { ok: true } }, { data: { ok: false, error: "missing_scope" } });
+  assert.equal((await f.invoke("/v1/composio/slack/reply", f.message)).status, 403);
+  const request = JSON.parse(String(f.calls.at(-1)!.init!.body));
+  assert.equal(request.body.channel, "D123");
+  assert.equal("thread_ts" in request.body, false);
 });

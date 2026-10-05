@@ -1,3 +1,4 @@
+import { parseSlackThreadRef } from "../../slack/message-gating.ts";
 import { isBackendCredential } from "../../credentials/keychain.ts";
 import { livePersonCapability } from "../artifact-share.ts";
 import { mintSignedPayload, verifySignedPayload } from "../../auth/signed-token.ts";
@@ -518,6 +519,111 @@ async function slackStatus(ctx: ApiCtx): Promise<void> {
     : sendJson(ctx.res, 200, { connected: false, workspaceInstalled });
 }
 
+async function slackReply(ctx: ApiCtx, send: boolean): Promise<void> {
+  if (!ctx.actor || ctx.actor.imp || ctx.capability)
+    return sendJson(ctx.res, 403, { error: "browser_identity_required" });
+  ctx.res.setHeader("Cache-Control", "no-store");
+  const body = ctx.body as { sessionId?: unknown; text?: unknown; clientMessageId?: unknown } | null;
+  if (typeof body?.sessionId !== "string") return sendJson(ctx.res, 400, { error: "invalid_session" });
+  const source = await ctx.app.getSessionForViewer(body.sessionId, ctx.actor.p);
+  if (!source) return sendJson(ctx.res, 404, { error: "not_found" });
+  const target = parseSlackThreadRef(source.session.threadRef);
+  if (!target || !/^[CDG][A-Z0-9]+$/.test(target.container) || (target.root && !/^\d+\.\d+$/.test(target.root)))
+    return sendJson(ctx.res, 400, { error: "not_slack" });
+  if (
+    send &&
+    (typeof body.text !== "string" ||
+      !body.text.trim() ||
+      body.text.length > 4000 ||
+      typeof body.clientMessageId !== "string" ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(body.clientMessageId))
+  )
+    return sendJson(ctx.res, 400, { error: "invalid_message" });
+  const access = await credential(ctx);
+  if (!access) return;
+  let attemptedSend = false;
+  try {
+    for (const id of personIds(access.principal)) {
+      const record = await ctx.deps.slackAccounts?.get(id);
+      if (!record || !samePerson(record.memberId, access.principal)) continue;
+      const account = await request(ctx, access.key, `/connected_accounts/${encodeURIComponent(record.accountId)}`);
+      if (
+        account.id !== record.accountId ||
+        !composioUserIds(access.principal).includes(String(account.user_id)) ||
+        (account.toolkit as { slug?: string } | undefined)?.slug !== "slack" ||
+        account.status !== "ACTIVE" ||
+        account.is_disabled === true
+      )
+        continue;
+      const proxy = async (method: string, payload?: Record<string, unknown>) => {
+        const result = await request(ctx, access.key, "/tools/execute/proxy", {
+          connected_account_id: record.accountId,
+          endpoint: `https://slack.com/api/${method}`,
+          method: method === "chat.postMessage" ? "POST" : "GET",
+          ...(method === "chat.postMessage"
+            ? { body: payload, parameters: [{ name: "Content-Type", value: "application/json", in: "header" }] }
+            : {
+                parameters: Object.entries(payload ?? {}).map(([name, value]) => ({
+                  name,
+                  value: String(value),
+                  in: "query",
+                })),
+              }),
+        });
+        return result.data as
+          | { ok?: boolean; bot_id?: string; user_id?: string; team_id?: string; ts?: string; error?: string }
+          | undefined;
+      };
+      const identity = await proxy("auth.test");
+      const installation = await ctx.deps.slackInstallation?.get();
+      if (
+        !identity?.ok ||
+        identity.bot_id ||
+        identity.user_id !== record.userId ||
+        identity.team_id !== record.teamId ||
+        (installation?.teamId && identity.team_id !== installation.teamId)
+      )
+        continue;
+      const conversation = await proxy("conversations.info", { channel: target.container });
+      if (!conversation?.ok)
+        return sendJson(ctx.res, 403, {
+          error: "slack_access_denied",
+          message: "Your Slack account cannot access this conversation. Check its Slack permissions.",
+        });
+      if (!send) return sendJson(ctx.res, 200, { connected: true, user: record.user, workspace: record.workspace });
+      attemptedSend = true;
+      const result = await proxy("chat.postMessage", {
+        channel: target.container,
+        ...(target.root ? { thread_ts: target.root } : {}),
+        text: body.text,
+        client_msg_id: body.clientMessageId,
+        as_user: true,
+        unfurl_links: false,
+        unfurl_media: false,
+      });
+      if (!result?.ok)
+        return sendJson(ctx.res, 403, {
+          error: "slack_send_failed",
+          message:
+            "Slack could not send your message. Check your account’s conversation access and permission to send messages.",
+        });
+      return sendJson(ctx.res, 200, { sent: true, ts: result.ts });
+    }
+    return sendJson(ctx.res, send ? 409 : 200, {
+      connected: false,
+      error: "slack_link_required",
+      message: "Link your personal Slack account to reply.",
+    });
+  } catch {
+    return sendJson(ctx.res, 502, {
+      error: "slack_unavailable",
+      message: attemptedSend
+        ? "The send outcome is unknown. Check Slack before trying again."
+        : "Could not verify your Slack connection. Please try again.",
+    });
+  }
+}
+
 async function completeSlack(ctx: ApiCtx): Promise<void> {
   const access = await credential(ctx);
   if (!access) return;
@@ -690,6 +796,8 @@ export const composioRoutes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "GET", path: "/v1/composio/tools", auth: "either", handle: tools },
   { method: "POST", path: "/v1/composio/execute", auth: "either", handle: execute },
   { method: "POST", path: "/v1/composio/complete-auth", auth: "source", handle: completeAuth },
+  { method: "POST", path: "/v1/composio/slack/reply-status", auth: "source", handle: (ctx) => slackReply(ctx, false) },
+  { method: "POST", path: "/v1/composio/slack/reply", auth: "source", handle: (ctx) => slackReply(ctx, true) },
   { method: "GET", path: "/v1/composio/slack", auth: "source", handle: slackStatus },
   { method: "POST", path: "/v1/composio/slack/authorize", auth: "source", handle: (ctx) => authorize(ctx, true) },
   { method: "POST", path: "/v1/composio/slack/complete", auth: "source", handle: completeSlack },

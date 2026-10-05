@@ -798,7 +798,7 @@ function isActiveRow(s: CoreSession): boolean {
 }
 
 function chatPageRow(s: CoreSession): TemplateResult {
-  const readOnly = !isContinuable(s, appState.me?.user ?? "");
+  const readOnly = surfaceOf(s) !== "slack" && !isContinuable(s, appState.me?.user ?? "");
   const color = displaySessionColor(s.color);
   return html`
     <div class="list-row chat-row ${color ? "colored" : ""}" style=${color ? `--session-color:${color}` : nothing}>
@@ -960,7 +960,7 @@ function sessionRow(s: CoreSession, projectChild = false): TemplateResult {
   const untitledProjectChild = projectChild && !s.title?.trim();
   let title = sessionTitle(s);
   if (untitledProjectChild && surfaceOf(s) !== "webhook") title = surfaceOf(s) === "web" ? "Web chat" : "New chat";
-  const readOnly = !isContinuable(s, appState.me?.user ?? "");
+  const readOnly = surfaceOf(s) !== "slack" && !isContinuable(s, appState.me?.user ?? "");
   const surface = surfaceOf(s);
   const context = projectChild ? null : rowContext(s);
   const working = sessionWorking(s);

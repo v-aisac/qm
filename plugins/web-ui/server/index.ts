@@ -1298,6 +1298,15 @@ const apiRoutes: readonly WebRoute[] = [
       c.res.end();
     },
   },
+  ...["reply-status", "reply"].map((action) => ({
+    method: "POST",
+    path: `/api/composio/slack/${action}`,
+    handle: async (c: WebCtx) => {
+      const body = await readJson(c.req, c.res, false);
+      if (!body) return;
+      return relayCore(c.res, "POST", `/v1/composio/slack/${action}`, JSON.stringify(body));
+    },
+  })),
   { method: "GET", path: "/api/composio/slack", handle: (c) => relayCore(c.res, "GET", "/v1/composio/slack") },
   {
     method: "POST",

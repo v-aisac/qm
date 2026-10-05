@@ -1,3 +1,5 @@
+import "./slack-reply";
+import type { SlackReply } from "./slack-reply";
 import { type WebhookEvent } from "./webhook-event.ts";
 import { assistantSidebar, assistantMessage } from "./assistant-sidebar";
 import { formatMessageTime } from "./message-time.ts";
@@ -1104,6 +1106,14 @@ export function createChatSurface(
     resetBackgroundPanel();
     const host = document.createElement("div");
     host.className = "custom-chat readonly-chat";
+    const priorReply = sameSession ? container.querySelector<SlackReply>("qm-slack-reply") : null;
+    const slackReply =
+      surfaceOf(s) === "slack" ? (priorReply ?? (document.createElement("qm-slack-reply") as SlackReply)) : null;
+    if (slackReply) {
+      slackReply.sessionId = s.id;
+      slackReply.user = appState.me?.user ?? "";
+      if (!priorReply) slackReply.addEventListener("slack-sent", () => onDelivery(s.threadRef));
+    }
     let approvals: PendingApproval[] = [];
     const draw = () => {
       approvals = unresolvedApprovals(approvals);
@@ -1112,12 +1122,12 @@ export function createChatSurface(
       render(
         html`
           <div class="custom-chat-shell">
-            ${chatHeader(groupDmTitle(s), surfaceOf(s), true)}
+            ${chatHeader(groupDmTitle(s), surfaceOf(s), surfaceOf(s) !== "slack")}
             <div class="readonly-banner">
               ${
                 surfaceOf(s) === "slack"
-                  ? html`This conversation lives in Slack. Replies happen
-                    there.${
+                  ? html`Replies are sent to this Slack conversation as
+                    you.${
                       sessionSlackUrl(s)
                         ? html` <a
                             class="readonly-banner-link"
@@ -1194,6 +1204,7 @@ export function createChatSurface(
                 ${ctx.composer.state.error ? html`<div class="composer-error inline">${ctx.composer.state.error}</div>` : nothing}
               </div>
             </section>
+            ${slackReply ?? nothing}
           </div>
         `,
         host,
