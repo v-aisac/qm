@@ -3340,9 +3340,11 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               }
             : undefined;
         const titleText = input.displayText?.trim() || input.text;
-        const fallbackTitle = !session.title && !syntheticPrompt ? fallbackSessionTitle(titleText) : undefined;
+        const fallbackTitle = !session.title
+          ? input.triggerTitle?.trim() || (!syntheticPrompt ? fallbackSessionTitle(titleText) : undefined)
+          : undefined;
         const fallbackTitleWrite = fallbackTitle ? deps.sessions.updateTitle(session.id, fallbackTitle) : undefined;
-        if (fallbackTitleWrite && deps.harness.models.generateTitle) {
+        if (fallbackTitleWrite && !input.triggerTitle && deps.harness.models.generateTitle) {
           void fallbackTitleWrite
             .then(() => generateAndStoreTitle(session.id, scopeId, `User:\n${stripTurnBoilerplate(titleText)}`))
             .finally(() => deps.errors?.flush())

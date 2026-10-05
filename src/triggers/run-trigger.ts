@@ -329,6 +329,7 @@ export async function runTrigger(deps: TriggerDeps, spec: TriggerSpec): Promise<
         text: spec.input,
         ...(spec.securityScreenData !== undefined ? { securityScreenData: spec.securityScreenData } : {}),
         triggered: true,
+        ...(spec.title ? { triggerTitle: spec.title } : {}),
         ...(!isScopeFloor && !isScopeShared && spec.unattendedGrants
           ? { unattendedGrants: spec.unattendedGrants }
           : {}),

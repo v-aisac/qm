@@ -702,6 +702,7 @@ export interface TurnRequest {
   unattendedGrants?: string[];
   securityScreenData?: string;
   triggerDestination?: Destination;
+  triggerTitle?: string;
   ownerKeychainUnion?: boolean;
   ownerResourcesRequireOpen?: boolean;
   unprompted?: boolean;

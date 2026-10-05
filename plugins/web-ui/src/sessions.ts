@@ -28,6 +28,7 @@ import {
   Plus,
   RefreshCw,
   SquareTerminal,
+  Webhook,
   Users,
   X,
   type IconNode,
@@ -243,6 +244,7 @@ function listWhen(ms: number): string {
 }
 
 export function surfaceOf(s: CoreSession): string {
+  if (s.threadRef.startsWith("webhook:") || s.surface === "webhook") return "webhook";
   if (s.threadRef.startsWith("web:")) return "web";
   if (s.threadRef.startsWith("dm:") || s.threadRef.startsWith("ch:")) return "slack";
   if (s.threadRef.startsWith("agent:main:subagent:") && s.surface) return s.surface;
@@ -266,6 +268,7 @@ function projectMenuKey(scopeId: string): string {
 }
 
 export function defaultSessionTitle(s: CoreSession): string {
+  if (surfaceOf(s) === "webhook") return "Webhook run";
   const project = projectName(s.scopeId);
   if (project) return project;
   const surface = surfaceOf(s);
@@ -811,7 +814,7 @@ function chatPageRow(s: CoreSession): TemplateResult {
         <span class="list-row-title">${statusMarks(s)}<span dir="auto">${groupDmTitle(s)}</span></span>
         <span class="list-row-meta">
           ${sessionStatusMark(s.status)} ${scopeChip(s.scopeId, s.channelName ?? null)}
-          ${surfaceOf(s) === "slack" ? html`<span class="surface surface-slack">${slackLogo(13)}</span>` : nothing}
+          ${surfaceOf(s) === "slack" ? html`<span class="surface surface-slack">${slackLogo(13)}</span>` : surfaceGlyph(s)}
           ${readOnly ? html`<span class="ro-lock" ${tip("Read-only")}>${icon(Lock, 12)}</span>` : nothing}
           <span class="list-row-date">${listWhen(activityOf(s))}</span>
           <span class="chat-row-arrow" aria-hidden="true">${icon(ChevronRight, 16)}</span>
@@ -935,6 +938,8 @@ function armMidnightRefresh(): void {
 
 function surfaceGlyph(s: CoreSession): TemplateResult | typeof nothing {
   const surface = surfaceOf(s);
+  if (surface === "webhook")
+    return html`<span class="surface-glyph" aria-label="Webhook run" ${tip("Webhook run")}>${icon(Webhook, 12)}</span>`;
   if (surface === "slack") return html`<span class="surface-glyph">${slackLogo(12)}</span>`;
   if (surface === "core") return html`<span class="surface-glyph">${icon(SquareTerminal, 12)}</span>`;
   return nothing;
@@ -954,7 +959,7 @@ function sessionRow(s: CoreSession, projectChild = false): TemplateResult {
   const refreshingTitle = saved && refreshingTitleIds.has(s.id);
   const untitledProjectChild = projectChild && !s.title?.trim();
   let title = sessionTitle(s);
-  if (untitledProjectChild) title = surfaceOf(s) === "web" ? "Web chat" : "New chat";
+  if (untitledProjectChild && surfaceOf(s) !== "webhook") title = surfaceOf(s) === "web" ? "Web chat" : "New chat";
   const readOnly = !isContinuable(s, appState.me?.user ?? "");
   const surface = surfaceOf(s);
   const context = projectChild ? null : rowContext(s);

@@ -1,3 +1,4 @@
+import { normalizeAutomationTitle } from "../triggers/automation-store.ts";
 import type { AutomationJobQueue } from "../triggers/job-queue.ts";
 import type { AdmittedWork } from "../util/admitted-work.ts";
 import { runRecordedTrigger } from "../triggers/run-record.ts";
@@ -108,6 +109,7 @@ export function createWebhookReceiver(deps: WebhookReceiverDeps): WebhookReceive
         securityScreenData: job.payload,
         fireKey,
         surface: "webhook",
+        title: wh.title ?? normalizeAutomationTitle(wh.action) ?? "Webhook run",
         ...(destination ? { destination } : {}),
         recipientConsentRequired: true,
         ...(wh.recipientConsent ? { recipientConsent: wh.recipientConsent } : {}),

@@ -53,6 +53,7 @@ test("a valid delivery fires a turn as the owner, in the owner scope, with the e
     ownerScopeId: scopeId("personal", "U1"),
     owner: "U1",
     createdBy: "U1",
+    title: "Issue triage",
     action: "triage this issue",
     verification: { scheme: "github", secret: SECRET },
     destination: { type: "slack", target: "D1", audienceScopeId: scopeId("personal", "U1") },
@@ -64,6 +65,7 @@ test("a valid delivery fires a turn as the owner, in the owner scope, with the e
 
   assert.equal(calls.length, 1);
   assert.equal(calls[0]?.surface, "webhook");
+  assert.equal(calls[0]?.triggerTitle, "Issue triage");
   assert.equal(calls[0]?.actor.externalId, "U1");
   assert.equal(calls[0]?.conversation.kind, "dm");
   assert.match(calls[0]?.text ?? "", /^<wake reason="webhook" surface="webhook" webhook-id=/);
