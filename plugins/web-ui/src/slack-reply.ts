@@ -1,3 +1,7 @@
+import { composerInput, resizeComposerInput } from "./composer-input";
+import { ArrowUp } from "lucide";
+import { icon } from "./ui";
+import { tip } from "./tooltip";
 import { LitElement, html, nothing } from "lit";
 import { withBase } from "./core-bridge";
 import "./slack-account";
@@ -24,7 +28,8 @@ export class SlackReply extends LitElement {
   private text = "";
   private label = "";
   private sent = false;
-  private inputId = `slack-reply-${crypto.randomUUID()}`;
+  private inputObserver: ResizeObserver | null = null;
+  private observedInput: HTMLTextAreaElement | null = null;
 
   protected createRenderRoot(): HTMLElement {
     return this;
@@ -32,10 +37,33 @@ export class SlackReply extends LitElement {
   connectedCallback(): void {
     super.connectedCallback();
     window.addEventListener("focus", this.refresh);
+    this.requestUpdate();
   }
   disconnectedCallback(): void {
     super.disconnectedCallback();
     window.removeEventListener("focus", this.refresh);
+    this.inputObserver?.disconnect();
+    this.inputObserver = null;
+    this.observedInput = null;
+  }
+  protected updated(): void {
+    const input = this.querySelector<HTMLTextAreaElement>(".composer-input");
+    if (input !== this.observedInput) {
+      this.inputObserver?.disconnect();
+      this.inputObserver = null;
+      this.observedInput = input;
+    }
+    if (!input) return;
+    resizeComposerInput(input);
+    if (!this.inputObserver && typeof ResizeObserver !== "undefined") {
+      let width = input.clientWidth;
+      this.inputObserver = new ResizeObserver(() => {
+        if (width === input.clientWidth) return;
+        width = input.clientWidth;
+        resizeComposerInput(input);
+      });
+      this.inputObserver.observe(input);
+    }
   }
   protected firstUpdated(): void {
     void this.refresh();
@@ -88,33 +116,45 @@ export class SlackReply extends LitElement {
   protected render() {
     if (this.loading)
       return html`<div class="slack-reply-box"><p role="status">Checking your Slack connection…</p></div>`;
+    if (this.connected)
+      return html`<form class="composer-wrap" @submit=${(e: Event) => void this.send(e)}>
+        ${composerInput({
+          value: this.text,
+          placeholder: `Reply in Slack as ${this.label}`,
+          label: `Reply in Slack as ${this.label}`,
+          disabled: this.sending,
+          maxLength: 4000,
+          onInput: (e) => {
+            this.text = (e.target as HTMLTextAreaElement).value;
+            this.sent = false;
+          },
+          onKeydown: (e) => {
+            if (e.isComposing || e.keyCode === 229 || e.key !== "Enter" || e.shiftKey) return;
+            void this.send(e);
+          },
+        })}
+        <div class="composer-toolbar">
+          <div class="composer-left">
+            <span class="slack-reply-status" role="status"
+              >${this.sending ? "Sending to Slack…" : nothing}${this.sent ? "Sent to Slack." : nothing}</span
+            >
+          </div>
+          <div class="composer-right">
+            <button
+              class="send-btn"
+              type="submit"
+              aria-label="Send to Slack"
+              ${tip("Send to Slack")}
+              ?disabled=${this.sending || !this.text.trim()}
+            >
+              ${icon(ArrowUp, 16)}
+            </button>
+          </div>
+        </div>
+        ${this.error ? html`<div class="composer-error" role="alert">${this.error}</div>` : nothing}
+      </form>`;
     return html`<div class="slack-reply-box">
-      ${
-        this.connected
-          ? html`<form @submit=${(e: Event) => void this.send(e)}>
-              <label for=${this.inputId}>Reply in Slack as ${this.label}</label>
-              <textarea
-                id=${this.inputId}
-                aria-label="Reply in Slack"
-                placeholder="Write a reply…"
-                rows="2"
-                maxlength="4000"
-                .value=${this.text}
-                ?disabled=${this.sending}
-                @input=${(e: Event) => {
-                  this.text = (e.target as HTMLTextAreaElement).value;
-                  this.sent = false;
-                }}
-              ></textarea>
-              <div class="slack-reply-actions">
-                <span role="status">${this.sent ? "Sent to Slack." : ""}</span>
-                <button class="btn" type="submit" ?disabled=${this.sending || !this.text.trim()}>
-                  ${this.sending ? "Sending…" : "Send to Slack"}
-                </button>
-              </div>
-            </form>`
-          : html`<qm-slack-account .user=${this.user} .reply=${true} @slack-linked=${this.refresh}></qm-slack-account>`
-      }
+      <qm-slack-account .user=${this.user} .reply=${true} @slack-linked=${this.refresh}></qm-slack-account>
       ${this.error ? html`<p class="slack-account-error" role="alert">${this.error} <button class="btn" @click=${this.refresh}>Check connection</button></p>` : nothing}
     </div>`;
   }

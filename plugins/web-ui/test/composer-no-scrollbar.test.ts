@@ -23,16 +23,16 @@ test("no chat composer leaves the horizontal axis on the textarea UA default of 
 });
 
 test("resizeComposer opens scrolling only past the cap and pins scrollTop under it", () => {
-  const fn = composer.match(/function resizeComposer\(\): void \{[\s\S]*?\n {2}\}/)?.[0] ?? "";
+  const fn = readFileSync(new URL("../src/composer-input.ts", import.meta.url), "utf8");
+  assert.match(composer, /resizeComposerInput\(ta, ctx.pane \? 0 : 48\)/);
   assert.match(
     fn,
-    /const cap = parseFloat\(getComputedStyle\(ta\)\.maxHeight\) \|\| 180;/,
+    /const cap = parseFloat\(getComputedStyle\(input\)\.maxHeight\) \|\| 180;/,
     "the cap follows the computed max-height (120 pane / 180 main)",
   );
   assert.match(fn, /content > cap/, "overflow flips on content beyond the cap only");
-  assert.match(fn, /overflowY = "auto"/);
-  assert.match(fn, /overflowY = "hidden"/);
-  assert.match(fn, /ta\.scrollTop = 0/, "under the cap any residual scroll offset is cleared");
+  assert.match(fn, /overflowY = content > cap \? "auto" : "hidden"/);
+  assert.match(fn, /input\.scrollTop = 0/, "under the cap any residual scroll offset is cleared");
 });
 
 test("the send-clear path resets overflow and scroll before the input is seen empty", () => {

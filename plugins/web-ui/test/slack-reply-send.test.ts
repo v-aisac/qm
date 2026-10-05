@@ -45,7 +45,10 @@ test("Slack composer posts to the Slack endpoint and retains text after a reject
     await h.openSession(session);
     assert.equal(document.querySelector("qm-slack-reply"), widget);
     assert.equal(field.value, "Hello Slack");
-    widget.querySelector("form")!.dispatchEvent(new window.Event("submit", { cancelable: true }));
+    field.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", shiftKey: true, cancelable: true }));
+    field.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", isComposing: true, cancelable: true }));
+    assert.equal(messages.length, 0);
+    field.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", cancelable: true }));
     await until(() => !!widget.querySelector('[role="alert"]'));
     assert.equal(field.value, "Hello Slack");
     assert.equal(messages.length, 1);

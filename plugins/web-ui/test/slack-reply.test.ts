@@ -33,7 +33,10 @@ test("Slack chats show a compact account link until the viewer can reply", async
     linked = true;
     window.dispatchEvent(new window.Event("focus"));
     await until(() => !!document.querySelector("qm-slack-reply textarea"));
-    assert.match(document.querySelector("qm-slack-reply")!.textContent!, /Reply in Slack as Alice/);
+    assert.match(
+      document.querySelector("qm-slack-reply .composer-input")!.getAttribute("placeholder")!,
+      /Reply in Slack as Alice/,
+    );
     assert.equal(document.querySelector(".chat-subtitle")!.textContent, "slack");
   } finally {
     await h.close();

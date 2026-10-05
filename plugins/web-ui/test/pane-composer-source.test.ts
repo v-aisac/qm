@@ -13,7 +13,7 @@ test("single-pane composers default to the full-width input above a separate too
   assert.match(css, /^\.composer-input \{[^}]*width: 100%;[^}]*min-height: 48px;/m);
   assert.match(css, /^\.composer-toolbar \{[^}]*display: flex;[^}]*justify-content: space-between;/m);
   assert.doesNotMatch(css, /\[data-density[^\]]*\] \.composer-(?:wrap|input|toolbar)\s*\{/);
-  assert.match(composer, /Math\.max\(ctx\.pane \? 0 : 48, content\)/);
+  assert.match(composer, /resizeComposerInput\(ta, ctx\.pane \? 0 : 48\)/);
 });
 
 test("a multipane composer fills the surface with square edges and no outer gutter", () => {
