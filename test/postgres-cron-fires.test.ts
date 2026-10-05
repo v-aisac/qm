@@ -299,3 +299,48 @@ test("pg cron_fires: existing legacy history and later legacy completions remain
     await client.end();
   }
 });
+
+test(
+  "pg shared runs: webhook receipts survive restart and duplicate receipts preserve completed runs",
+  { skip },
+  async () => {
+    const fires = createPostgresCronFireStore(URL!);
+    const entry = {
+      fireKey: "webhook:shared:delivery",
+      threadRef: "webhook:shared:delivery",
+      firedAt: 100,
+      status: "queued" as const,
+      payload: '{"action":"opened"}',
+      deliveryId: "delivery",
+    };
+    await Promise.all(Array.from({ length: 8 }, () => fires.accept("webhook:shared", entry)));
+    await fires.record("shared", { fireKey: "cron:shared", threadRef: "cron:shared", firedAt: 100, status: "ok" });
+    const restored = createPostgresCronFireStore(URL!);
+    assert.deepEqual((await restored.listByCron("webhook:shared")).runs, [entry]);
+    const completed = { ...entry, status: "ok" as const, endedAt: 200, sessionId: "webhook-session", reply: "done" };
+    await restored.record("webhook:shared", completed);
+    assert.deepEqual(
+      await restored.accept("webhook:shared", { ...entry, firedAt: 999, payload: "changed" }),
+      completed,
+    );
+    assert.equal((await restored.listByCron("shared")).runs[0]?.fireKey, "cron:shared");
+  },
+);
+
+test("pg shared runs: cron recovery closes stranded webhook receipts and retains their inputs", { skip }, async () => {
+  const fires = createPostgresCronFireStore(URL!);
+  await fires.accept("webhook:stranded", {
+    fireKey: "queued",
+    threadRef: "queued",
+    firedAt: 1,
+    status: "queued",
+    payload: "original event",
+    deliveryId: "queued",
+  });
+  const crons = createCronStore(undefined, { fires, staleRunningMs: 100 });
+  await crons.sweepStrandedFires(500);
+  const run = (await fires.listByCron("webhook:stranded")).runs[0]!;
+  assert.equal(run.status, "failed");
+  assert.equal(run.endedAt, 500);
+  assert.equal(run.payload, "original event");
+});

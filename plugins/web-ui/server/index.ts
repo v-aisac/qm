@@ -3064,6 +3064,33 @@ const apiRoutes: readonly WebRoute[] = [
     },
   },
   {
+    method: "GET",
+    path: "/api/webhooks/:id/runs",
+    handle: ({ res, user, params }) =>
+      relayCore(res, "GET", `/v1/webhooks/${encodeURIComponent(params.id!)}/runs?viewer=${encodeURIComponent(user)}`),
+  },
+  {
+    method: "DELETE",
+    path: "/api/webhooks/:id",
+    handle: ({ res, user, params }) =>
+      relayCore(
+        res,
+        "DELETE",
+        `/v1/webhooks/${encodeURIComponent(params.id!)}?principalId=${encodeURIComponent(user)}`,
+      ),
+  },
+  {
+    method: "PATCH",
+    path: "/api/webhooks/:id",
+    handle: async ({ req, res, user, params }) =>
+      relayCore(
+        res,
+        "PATCH",
+        `/v1/webhooks/${encodeURIComponent(params.id!)}?principalId=${encodeURIComponent(user)}`,
+        await readBody(req),
+      ),
+  },
+  {
     method: "POST",
     path: "/api/webhooks/:id/disable",
     handle: (c) => setWebhookEnabledViaCore(c.res, c.user, c.params.id!, "disable"),

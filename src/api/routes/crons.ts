@@ -1,3 +1,4 @@
+import { automationFields, isAutomationFields } from "./automation-fields.ts";
 import { isCronRuntime } from "../../cron/runtime.ts";
 import type { Cron } from "../../types.ts";
 import type { CreateCronInput, CronPatch } from "../../cron/cron-store.ts";
@@ -111,22 +112,12 @@ function isCronPatch(b: unknown): b is {
   unattendedGrants?: string[];
   session?: boolean;
 } {
-  if (!isObj(b) || !isCronRuntime(b.runtime)) return false;
+  if (!isObj(b) || !isAutomationFields(b) || !isCronRuntime(b.runtime)) return false;
   if (!hasCronPatchFields(b)) return true;
-  const hasTitle = b.title !== undefined;
-  const hasAction = b.action !== undefined;
-  const hasTask = b.task !== undefined;
   const hasSchedule = b.schedule !== undefined;
-  const hasEnabled = b.enabled !== undefined;
-  const hasArchived = b.archived !== undefined;
   const hasUnfurlLinks = b.unfurlLinks !== undefined;
   const hasRunAs = b.runAs !== undefined;
   const hasUnattendedGrants = b.unattendedGrants !== undefined;
-  if (hasTitle && typeof b.title !== "string") return false;
-  if (hasAction && typeof b.action !== "string") return false;
-  if (hasTask && typeof b.task !== "string") return false;
-  if (hasEnabled && typeof b.enabled !== "boolean") return false;
-  if (hasArchived && typeof b.archived !== "boolean") return false;
   if (hasUnfurlLinks && typeof b.unfurlLinks !== "boolean") return false;
   if (hasRunAs && b.runAs !== "owner" && b.runAs !== "scopeFloor" && b.runAs !== "scopeShared") return false;
   if (
@@ -281,7 +272,7 @@ async function disableCron(ctx: ApiCtx): Promise<void> {
     return sendJson(res, 200, { ok: true });
   }
   if (!(await gateSourceCron(ctx, id))) return;
-  await app.setCronEnabled(id, false);
+  await app.setCronEnabled(id, false, ctx.actor?.p ?? ctx.url.searchParams.get("principalId") ?? undefined);
   return sendJson(res, 200, { ok: true });
 }
 
@@ -378,16 +369,12 @@ async function cronById(ctx: ApiCtx): Promise<void> {
     }
     const schedule =
       body.schedule !== undefined ? userScheduleFromBody(body.schedule, defaultTimezoneFor(capability))! : undefined;
-    const task = body.action ?? body.task;
     const r = await ctx.deps.control.patchCron(
       id,
       {
         ...(body.runtime !== undefined ? { runtime: body.runtime } : {}),
-        ...(body.title !== undefined ? { title: body.title } : {}),
-        ...(task !== undefined ? { action: task } : {}),
+        ...automationFields(body),
         ...(schedule !== undefined ? { schedule } : {}),
-        ...(body.enabled !== undefined ? { enabled: body.enabled } : {}),
-        ...(body.archived !== undefined ? { archived: body.archived } : {}),
         ...(body.unfurlLinks !== undefined ? { unfurlLinks: body.unfurlLinks } : {}),
         ...(body.runAs !== undefined ? { runAs: body.runAs } : {}),
         ...(body.unattendedGrants !== undefined ? { unattendedGrants: body.unattendedGrants } : {}),
@@ -407,7 +394,7 @@ async function cronById(ctx: ApiCtx): Promise<void> {
   const cron = await gateSourceCron(ctx, id);
   if (!cron) return;
   if (method === "DELETE") {
-    await app.deleteCron(id);
+    await app.deleteCron(id, ctx.actor?.p ?? ctx.url.searchParams.get("principalId") ?? undefined);
     return sendJson(res, 200, { ok: true });
   }
   if ((cron.unattendedGrants?.length ?? 0) > 0) {
@@ -426,7 +413,6 @@ async function cronById(ctx: ApiCtx): Promise<void> {
       message: "changing a cron's mode requires an agent capability token",
     });
   const schedule = body.schedule !== undefined ? userScheduleFromBody(body.schedule)! : undefined;
-  const task = body.action ?? body.task;
   if (body.unfurlLinks !== undefined && !cron.destination) {
     return sendJson(res, 400, {
       error: "bad_request",
@@ -435,17 +421,18 @@ async function cronById(ctx: ApiCtx): Promise<void> {
   }
   const patch: CronPatch = {
     ...(body.runtime !== undefined ? { runtime: body.runtime } : {}),
-    ...(body.title !== undefined ? { title: body.title } : {}),
-    ...(task !== undefined ? { action: task } : {}),
+    ...automationFields(body),
     ...(schedule !== undefined ? { schedule } : {}),
-    ...(body.enabled !== undefined ? { enabled: body.enabled } : {}),
-    ...(body.archived !== undefined ? { archived: body.archived } : {}),
     ...(body.unfurlLinks !== undefined && cron.destination
       ? { destination: { ...cron.destination, unfurlLinks: body.unfurlLinks } }
       : {}),
   };
   try {
-    const updated = await app.updateCron(id, patch);
+    const updated = await app.updateCron(
+      id,
+      patch,
+      ctx.actor?.p ?? ctx.url.searchParams.get("principalId") ?? undefined,
+    );
     return sendJson(res, 200, { cron: updated ? withoutFireLog(updated) : null });
   } catch (e) {
     return sendJson(res, 400, { error: "cron_update_failed", message: errMessage(e) });

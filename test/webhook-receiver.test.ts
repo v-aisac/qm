@@ -371,3 +371,67 @@ test("history capture failure rejects before acknowledging or starting a turn", 
   await flush();
   assert.equal(calls.length, 0);
 });
+
+test("accepted events have receipt status before the agent run completes", async () => {
+  const webhooks = createWebhookStore();
+  const identity = createIdentityService();
+  let finish!: (result: TurnResult) => void;
+  const pending = new Promise<TurnResult>((resolve) => {
+    finish = resolve;
+  });
+  const receiver = createWebhookReceiver({
+    webhooks,
+    identity,
+    deliveries: createDeliveryStore(),
+    idempotency: createIdempotencyStore(),
+    run: () => pending,
+  });
+  const wh = await webhooks.create({
+    ownerScopeId: scopeId("personal", "U1"),
+    owner: "U1",
+    createdBy: "U1",
+    action: "wait",
+    verification: { scheme: "github", secret: SECRET },
+  });
+  assert.equal((await receiver.deliver(wh.id, githubReq('{"action":"opened"}'))).status, 202);
+  await flush();
+  const accepted = await webhooks.get(wh.id);
+  assert.ok(accepted?.lastReceivedAt);
+  assert.equal(accepted?.lastFiredAt, accepted?.lastReceivedAt);
+  assert.equal(accepted?.lastRun?.status, "running");
+  finish({ status: "silent" });
+  await flush();
+  assert.ok((await webhooks.get(wh.id))?.lastFiredAt);
+});
+
+test("webhook runs use cron lifecycle records and duplicate deliveries preserve the final result", async () => {
+  const { receiver, webhooks, calls } = harness({ status: "ok", reply: "Recorded reply", sessionId: "run-session" });
+  const wh = await webhooks.create(historyWebhook);
+  await receiver.deliver(wh.id, githubReq('{"action":"opened"}'));
+  await flush();
+  const completed = await webhooks.listFires(wh.id);
+  assert.equal(completed.total, 1);
+  assert.equal(completed.runs[0]?.status, "ok");
+  assert.equal(completed.runs[0]?.reply, "Recorded reply");
+  assert.equal(completed.runs[0]?.sessionId, "run-session");
+  assert.match(completed.runs[0]?.payload ?? "", /opened/);
+  assert.ok(completed.runs[0]?.endedAt);
+  await receiver.deliver(wh.id, githubReq('{"action":"opened"}'));
+  await flush();
+  assert.equal(calls.length, 1);
+  assert.deepEqual(await webhooks.listFires(wh.id), completed);
+});
+
+test("archived webhooks reject deliveries and enabling them restores cron-style active state", async () => {
+  const { receiver, webhooks, calls } = harness();
+  const wh = await webhooks.create(historyWebhook);
+  await webhooks.update(wh.id, { archived: true, title: "Issue triage" });
+  assert.equal((await webhooks.get(wh.id))?.enabled, false);
+  assert.equal((await receiver.deliver(wh.id, githubReq('{"action":"opened"}'))).status, 404);
+  assert.equal(calls.length, 0);
+  await webhooks.setEnabled(wh.id, true);
+  assert.equal((await webhooks.get(wh.id))?.archived, false);
+  assert.equal((await receiver.deliver(wh.id, githubReq('{"action":"opened"}'))).status, 202);
+  await flush();
+  assert.equal(calls.length, 1);
+});

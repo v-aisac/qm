@@ -16,7 +16,7 @@ export interface Harness {
   sessionsReady: () => Promise<void>;
   refreshSessions: () => Promise<boolean>;
   boot: () => Promise<void>;
-  switchView: (view: "chats" | "settings") => void;
+  switchView: (view: "chats" | "settings" | "crons" | "webhooks") => void;
   renderList: () => void;
   drawChatsPage: () => void;
   appState: { currentView: string };
@@ -27,6 +27,7 @@ export interface Harness {
 }
 
 interface HarnessOptions {
+  api?: (path: string, init?: RequestInit) => Response | undefined;
   path: string;
   session?: CoreSession;
   messageLink?: boolean;
@@ -122,9 +123,11 @@ export async function harness(opts: HarnessOptions): Promise<Harness> {
   const sessionsHeld = new Promise<void>((resolve) => (releaseSessions = resolve));
   const transcriptHeld = new Promise<void>((resolve) => (releaseTranscript = resolve));
   let failuresLeft = opts.transcriptFailures ?? (opts.transcriptStatus ? Number.POSITIVE_INFINITY : 0);
-  const respond = async (input: RequestInfo | URL): Promise<Response> => {
+  const respond = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const path = String(input);
     requests.push(path);
+    const custom = opts.api?.(path, init);
+    if (custom) return custom;
     if (path === "/me")
       return Response.json({
         user: "tester",
@@ -193,8 +196,8 @@ export async function harness(opts: HarnessOptions): Promise<Harness> {
   };
 
   const globals = {
-    fetch: (input: RequestInfo | URL): Promise<Response> => {
-      const answer = respond(input);
+    fetch: (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const answer = respond(input, init);
       inFlight.add(answer);
       void answer.finally(() => inFlight.delete(answer)).catch(() => {});
       return answer;
@@ -207,6 +210,7 @@ export async function harness(opts: HarnessOptions): Promise<Harness> {
     sessionStorage: dom.window.sessionStorage,
     navigator: dom.window.navigator,
     HTMLElement: dom.window.HTMLElement,
+    HTMLAnchorElement: dom.window.HTMLAnchorElement,
     Element: dom.window.Element,
     Node: dom.window.Node,
     Event: dom.window.Event,
@@ -216,6 +220,7 @@ export async function harness(opts: HarnessOptions): Promise<Harness> {
     getComputedStyle: dom.window.getComputedStyle.bind(dom.window),
     cancelAnimationFrame: clearTimeout,
     EventSource: undefined,
+    DOMParser: dom.window.DOMParser,
     ResizeObserver: class {
       observe() {}
       unobserve() {}

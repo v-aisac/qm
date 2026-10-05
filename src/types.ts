@@ -258,17 +258,21 @@ export interface CronSchedule {
   firstFireAt?: number;
 }
 
-export interface CronFireLogEntry {
+export interface AutomationRun {
+  payload?: string;
+  deliveryId?: string;
   fireKey: string;
   threadRef: string;
   firedAt: number;
   scheduledAt?: number;
-  status?: TurnResult["status"] | "running" | "deferred";
+  status?: TurnResult["status"] | "queued" | "running" | "deferred";
   endedAt?: number;
   note?: string;
   reply?: string;
   sessionId?: string;
 }
+
+export type CronFireLogEntry = AutomationRun;
 
 export interface CronFireNote {
   text: string;
@@ -276,16 +280,19 @@ export interface CronFireNote {
   by?: string;
 }
 
-export interface Cron extends TriggerBase {
+export interface Automation extends TriggerBase {
+  title?: string;
+  archived?: boolean;
+  action?: string;
+  message?: string;
+}
+
+export interface Cron extends Automation {
   runtime?: import("./harness/harness.ts").RuntimeChoice | null;
   schedule: CronSchedule;
   nextFireAt?: number;
   lastAttemptAt?: number;
   deferUntil?: number;
-  title?: string;
-  archived?: boolean;
-  action?: string;
-  message?: string;
   loopId?: string;
   createdAt: number;
   runAs?: "owner" | "scopeFloor" | "scopeShared";
@@ -308,7 +315,9 @@ interface WebhookFilter {
   in: string[];
 }
 
-export interface Webhook extends TriggerBase {
+export interface Webhook extends Automation {
+  lastRun?: Pick<AutomationRun, "firedAt" | "endedAt" | "status">;
+  lastReceivedAt?: number;
   action: string;
   verification: WebhookVerification;
   filters?: WebhookFilter[];

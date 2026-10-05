@@ -1815,7 +1815,11 @@ export function buildApp(
       cronChanged.notify?.(id);
     },
   };
-  const webhooks = createWebhookStore(artifactMap<Webhook>("webhooks"), artifactMap<WebhookHistory>("webhook_history"));
+  const webhooks = createWebhookStore(
+    artifactMap<Webhook>("webhooks"),
+    artifactMap<WebhookHistory>("webhook_history"),
+    cronFires,
+  );
   pgArtifactMap?.pool.registerMigration({
     id: "durable-map/webhooks/0002-disable-rows-orphaned-by-webhook-removal",
     legacyId: "durable-map/webhooks/0002-disable-rows-orphaned-by-webhook-removal",

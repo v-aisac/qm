@@ -1,7 +1,8 @@
+import { runRecordedTrigger } from "../triggers/run-record.ts";
 import type { Destination, Webhook } from "../types.ts";
 import type { WebhookStore } from "./webhook-store.ts";
 import { getVerifier, type VerifierInput } from "./verifiers.ts";
-import { runTrigger, type TriggerDeps } from "../triggers/run-trigger.ts";
+import { type TriggerDeps } from "../triggers/run-trigger.ts";
 import { buildWebhookWakeEnvelope, capForEscaping } from "../core/wake-envelope.ts";
 import { errMessage, reportFailure } from "../util/errors.ts";
 
@@ -81,7 +82,7 @@ export function createWebhookReceiver(deps: WebhookReceiverDeps): WebhookReceive
   return {
     async deliver(id, req) {
       const wh = await deps.webhooks.get(id);
-      if (!wh || !wh.enabled) return { status: 404 };
+      if (!wh || !wh.enabled || wh.archived) return { status: 404 };
 
       const verifier = getVerifier(wh.verification.scheme);
       if (!verifier) return { status: 404 };
@@ -106,25 +107,43 @@ export function createWebhookReceiver(deps: WebhookReceiverDeps): WebhookReceive
 
       const event = renderEvent(wh, deliveryId, parsed, req.rawBody);
       const destination: Destination | undefined = wh.destination;
-      await deps.webhooks.recordEvent(wh.id, {
+      const receivedAt = Date.now();
+      const receipt = await deps.webhooks.recordEvent(wh.id, {
         deliveryId,
-        receivedAt: Date.now(),
+        receivedAt,
         payload: event.securityScreenData,
       });
 
-      void runTrigger(triggerDeps, {
-        owner: wh.owner,
-        ownerScopeId: wh.ownerScopeId,
-        input: event.input,
-        securityScreenData: event.securityScreenData,
-        fireKey,
-        surface: "webhook",
-        ...(destination ? { destination } : {}),
-        recipientConsentRequired: true,
-        ...(wh.recipientConsent ? { recipientConsent: wh.recipientConsent } : {}),
-        errorNotice: (s) => `⚠️ Webhook did not complete: ${s}`,
-      })
+      void runRecordedTrigger(
+        triggerDeps,
+        {
+          owner: wh.owner,
+          ownerScopeId: wh.ownerScopeId,
+          input: event.input,
+          securityScreenData: event.securityScreenData,
+          fireKey,
+          surface: "webhook",
+          ...(destination ? { destination } : {}),
+          recipientConsentRequired: true,
+          ...(wh.recipientConsent ? { recipientConsent: wh.recipientConsent } : {}),
+          errorNotice: (s) => `⚠️ Webhook did not complete: ${s}`,
+        },
+        {
+          entry: {
+            fireKey,
+            threadRef: fireKey,
+            firedAt: receipt.receivedAt,
+            status: "running",
+            payload: receipt.payload,
+            deliveryId,
+          },
+          begin: (entry) => deps.webhooks.beginFire(wh.id, entry),
+          record: (entry) => deps.webhooks.finishFire(wh.id, entry),
+          now: Date.now,
+        },
+      )
         .then(async (outcome) => {
+          if (!outcome.ran && !outcome.authzFailed) return;
           if (outcome.authzFailed) {
             await deps.webhooks.setEnabled(wh.id, false);
             await deps.webhooks.recordFire(wh.id, { at: Date.now(), error: outcome.note ?? "fail-closed" });
@@ -136,9 +155,11 @@ export function createWebhookReceiver(deps: WebhookReceiverDeps): WebhookReceive
             ...(outcome.note ? { error: outcome.note } : {}),
           });
         })
-        .catch((e: unknown) => {
+        .catch(async (e: unknown) => {
           const msg = errMessage(e);
-          void deps.webhooks.recordFire(wh.id, { at: Date.now(), error: msg });
+          await deps.webhooks
+            .recordFire(wh.id, { at: Date.now(), error: msg })
+            .catch((error: unknown) => reportFailure("webhook: completion record", error));
           reportFailure("webhook: fire", e, `webhook=${wh.id}`);
         });
 

@@ -773,6 +773,9 @@ test("backfill cannot clobber a newer retry of the same fireKey with a stale sna
 test("the fire table is the journal of record — a write failure surfaces instead of being swallowed", async () => {
   const store = createCronStore(undefined, {
     fires: {
+      accept: async () => {
+        throw new Error("unexpected accept");
+      },
       record: async () => {
         throw new Error("table down");
       },

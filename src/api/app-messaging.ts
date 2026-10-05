@@ -1,3 +1,4 @@
+import { createAutomationService } from "../triggers/automation-service.ts";
 import type { ScopeId } from "../types.ts";
 import { orgId as orgIdOf } from "../config.ts";
 import { parseScopeId, scopeId } from "../types.ts";
@@ -79,6 +80,9 @@ export function createMessagingMethods(
   | "setCronRecipientConsent"
   | "createWebhook"
   | "getWebhook"
+  | "updateWebhook"
+  | "deleteWebhook"
+  | "listWebhookFires"
   | "listWebhooks"
   | "listWebhookEvents"
   | "setWebhookEnabled"
@@ -169,8 +173,8 @@ export function createMessagingMethods(
     if (error) throw new Error(error);
   };
 
-  return {
-    async createCron(input) {
+  const cronManagement = createAutomationService("cron", deps.crons, deps.auditLog, {
+    async create(input) {
       await validateRuntime(input);
       validateUserSchedule(input.schedule);
       if (input.runAs === "scopeShared") {
@@ -181,47 +185,9 @@ export function createMessagingMethods(
           throw new Error("scopeShared requires a member snapshot or current Open scope membership");
         if (open) input = { ...input, ownerResourcesRequireOpen: true };
       }
-      const cron = await deps.crons.create(input);
-      deps.auditLog.record({
-        at: Date.now(),
-        principalId: cron.createdBy,
-        action: "cron_create",
-        resource: cron.id,
-        scopeLabel: cron.ownerScopeId,
-      });
-      return cron;
+      return input;
     },
-    getCron(id) {
-      return deps.crons.get(id);
-    },
-    listCronFires(id, opts) {
-      return deps.crons.listFires(id, opts);
-    },
-    cronFiresByThreadRefs(threadRefs) {
-      return deps.crons.firesByThreadRefs(threadRefs);
-    },
-    latestCronFireForThread(id, threadRef) {
-      return deps.crons.latestFireForThread(id, threadRef);
-    },
-    listCrons() {
-      return deps.crons.list();
-    },
-    async listCronsForViewer(principalId) {
-      const all = await deps.crons.list();
-      const { viewersOwn, scopeNames, canSee } = await cronVisibility(deps, h, principalId);
-      const owned = all.filter((c) => viewersOwn(c.owner) && canSee(c));
-      const visible = all
-        .filter((c) => !viewersOwn(c.owner))
-        .filter(canSee)
-        .map((c) => {
-          const name = scopeNames.get(c.ownerScopeId);
-          return name ? { ...c, scopeName: name } : c;
-        });
-      return { owned, visible };
-    },
-    async updateCron(id, patch) {
-      const before = await deps.crons.get(id);
-      if (!before) return null;
+    async update(before, patch) {
       if (patch.runtime !== undefined) await validateRuntime({ ...before, ...patch });
       if (patch.schedule) validateUserSchedule(patch.schedule);
       if (patch.runAs === "scopeShared") {
@@ -236,31 +202,40 @@ export function createMessagingMethods(
       const grantsReaffirmed = patch.unattendedGrants !== undefined;
       const guardedPatch =
         (before.unattendedGrants?.length ?? 0) > 0 && !grantsReaffirmed ? { ...patch, unattendedGrants: [] } : patch;
-      const updated = await deps.crons.update(id, guardedPatch);
-      deps.auditLog.record({
-        at: Date.now(),
-        principalId: before.owner,
-        action: "cron_update",
-        resource: id,
-        scopeLabel: before.ownerScopeId,
-      });
-      return updated;
+      return guardedPatch;
     },
-    async deleteCron(id) {
-      const before = await deps.crons.get(id);
-      await deps.crons.delete(id);
-      if (before)
-        deps.auditLog.record({
-          at: Date.now(),
-          principalId: before.owner,
-          action: "cron_delete",
-          resource: id,
-          scopeLabel: before.ownerScopeId,
+  });
+  const webhookManagement = createAutomationService("webhook", deps.webhooks, deps.auditLog);
+
+  return {
+    createCron: cronManagement.create,
+    getCron: cronManagement.get,
+    listCronFires(id, opts) {
+      return deps.crons.listFires(id, opts);
+    },
+    cronFiresByThreadRefs(threadRefs) {
+      return deps.crons.firesByThreadRefs(threadRefs);
+    },
+    latestCronFireForThread(id, threadRef) {
+      return deps.crons.latestFireForThread(id, threadRef);
+    },
+    listCrons: cronManagement.list,
+    async listCronsForViewer(principalId) {
+      const all = await deps.crons.list();
+      const { viewersOwn, scopeNames, canSee } = await cronVisibility(deps, h, principalId);
+      const owned = all.filter((c) => viewersOwn(c.owner) && canSee(c));
+      const visible = all
+        .filter((c) => !viewersOwn(c.owner))
+        .filter(canSee)
+        .map((c) => {
+          const name = scopeNames.get(c.ownerScopeId);
+          return name ? { ...c, scopeName: name } : c;
         });
+      return { owned, visible };
     },
-    setCronEnabled(id, enabled) {
-      return deps.crons.setEnabled(id, enabled);
-    },
+    updateCron: cronManagement.update,
+    deleteCron: cronManagement.delete,
+    setCronEnabled: cronManagement.setEnabled,
     async setCronFireNote(id, note) {
       const before = await deps.crons.get(id);
       if (!before) return "missing";
@@ -282,36 +257,38 @@ export function createMessagingMethods(
       await validateRuntime({ ...before, runtime });
       return deps.crons.update(id, { runtime });
     },
-    async setCronDestination(id, destination) {
-      const before = await deps.crons.get(id);
-      if (!before) return null;
-      await deps.crons.setDestination(id, destination);
-      deps.auditLog.record({
-        at: Date.now(),
-        principalId: before.owner,
-        action: "cron_retarget",
-        resource: id,
-        scopeLabel: before.ownerScopeId,
-      });
-      return deps.crons.get(id);
+    setCronDestination: cronManagement.setDestination,
+    setCronRecipientConsent: cronManagement.setRecipientConsent,
+    createWebhook: webhookManagement.create,
+    updateWebhook: webhookManagement.update,
+    deleteWebhook: webhookManagement.delete,
+    async listWebhookFires(id, viewer) {
+      const { runs, total } = await deps.webhooks.listFires(id, { limit: 50 });
+      const events = await deps.webhooks.listEvents(id);
+      const byKey = new Map(runs.map((run) => [run.fireKey, run]));
+      for (const event of events) {
+        const fireKey = `webhook:${id}:${event.deliveryId}`;
+        if (!byKey.has(fireKey)) byKey.set(fireKey, { fireKey, threadRef: fireKey, firedAt: event.receivedAt });
+      }
+      const visibleRuns = await Promise.all(
+        [...byKey.values()]
+          .sort((a, b) => a.firedAt - b.firedAt)
+          .slice(-50)
+          .map(async (run) => {
+            const { sessionId: _storedSession, ...entry } = run;
+            const session = await deps.sessions.getByThread(run.threadRef);
+            const visible = session && (await h.sessionForViewer(session.id, viewer));
+            const event = events.find((event) => `webhook:${id}:${event.deliveryId}` === run.fireKey);
+            return {
+              ...entry,
+              ...(event ? { payload: event.payload } : {}),
+              ...(visible ? { sessionId: session.id } : {}),
+            };
+          }),
+      );
+      return { runs: visibleRuns, total: Math.max(total, byKey.size) };
     },
-    setCronRecipientConsent(id, recipientConsent) {
-      return deps.crons.setRecipientConsent(id, recipientConsent);
-    },
-    async createWebhook(input) {
-      const webhook = await deps.webhooks.create(input);
-      deps.auditLog.record({
-        at: Date.now(),
-        principalId: webhook.createdBy,
-        action: "webhook_create",
-        resource: webhook.id,
-        scopeLabel: webhook.ownerScopeId,
-      });
-      return webhook;
-    },
-    getWebhook(id) {
-      return deps.webhooks.get(id);
-    },
+    getWebhook: webhookManagement.get,
     async listWebhookEvents(id, viewer) {
       const events = await deps.webhooks.listEvents(id);
       return Promise.all(
@@ -322,15 +299,9 @@ export function createMessagingMethods(
         }),
       );
     },
-    listWebhooks() {
-      return deps.webhooks.list();
-    },
-    setWebhookEnabled(id, enabled) {
-      return deps.webhooks.setEnabled(id, enabled);
-    },
-    setWebhookRecipientConsent(id, recipientConsent) {
-      return deps.webhooks.setRecipientConsent(id, recipientConsent);
-    },
+    listWebhooks: webhookManagement.list,
+    setWebhookEnabled: webhookManagement.setEnabled,
+    setWebhookRecipientConsent: webhookManagement.setRecipientConsent,
     pendingDeliveries(type, claimMs) {
       return claimMs && claimMs > 0 ? deps.deliveries.claimPending(type, claimMs) : deps.deliveries.pending(type);
     },

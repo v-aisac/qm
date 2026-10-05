@@ -1,3 +1,4 @@
+import { type WebhookEvent } from "./webhook-event.ts";
 import { assistantSidebar, assistantMessage } from "./assistant-sidebar";
 import { formatMessageTime } from "./message-time.ts";
 import { messageEntrySeqs, highlightMessage } from "./message-link.ts";
@@ -1757,6 +1758,15 @@ export function createChatSurface(
     const role = (message as { role?: string }).role;
     if (!inline && (message as { steered?: boolean }).steered) return nothing;
     if (role === "user" || role === "user-with-attachments") {
+      const webhook = (message as { webhookEvent?: WebhookEvent }).webhookEvent;
+      if (webhook)
+        return html`<article
+          class="message-row webhook-event-row"
+          data-index=${index}
+          data-entry-seqs=${messageEntrySeqs(message).join(" ")}
+        >
+          ${webhookEventCard(webhook)}${messageMeta(message, index)}
+        </article>`;
       const mail = (message as { subagentMail?: SubagentMailRef }).subagentMail;
       if (mail) {
         return html`
@@ -3422,4 +3432,30 @@ export function createChatSurface(
     redraw: () => drawActiveChat(),
     dispose,
   };
+}
+
+function webhookEventCard(event: WebhookEvent) {
+  return html`<div class="webhook-event">
+    <div class="webhook-event-heading">
+      Webhook received${event.scheme ? html`<span>${event.scheme}</span>` : nothing}
+    </div>
+    ${event.action ? html`<div class="webhook-event-action">${event.action}</div>` : nothing}
+    <details open>
+      <summary>Event payload</summary>
+      <pre>${event.payload}</pre>
+    </details>
+    <details>
+      <summary>Delivery details</summary>
+      <dl>
+        <dt>Webhook</dt>
+        <dd>${event.id || "Unknown"}</dd>
+        ${
+          event.deliveryId
+            ? html`<dt>Delivery</dt>
+                <dd>${event.deliveryId}</dd>`
+            : nothing
+        }
+      </dl>
+    </details>
+  </div>`;
 }

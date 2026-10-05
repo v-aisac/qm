@@ -1,3 +1,4 @@
+import { canManageAutomation } from "../triggers/automation-service.ts";
 import { unattendedGrantRefusal } from "../cron/authority.ts";
 import { isDeepStrictEqual } from "node:util";
 import type { Cron, CronFireLogEntry, CronSchedule, Destination, Principal, Webhook } from "../types.ts";
@@ -189,12 +190,12 @@ export async function canAdministerCron(
   callerScopeId?: ScopeId,
   isActor?: (id: string) => Promise<boolean>,
 ): Promise<boolean> {
-  if (await app.membershipControlsScope(cron.ownerScopeId)) return app.managesScope(actorId, cron.ownerScopeId);
-  if (await (isActor ? isActor(cron.owner) : app.samePerson(cron.owner, actorId))) return true;
-  const team = cron.runAs === "scopeFloor" || cron.runAs === "scopeShared";
-  if (team && cron.ownerScopeId === callerScopeId) return app.isCurrentSharedScopeMember(actorId, cron.ownerScopeId);
-  if (team && (await app.isOpenScopeMember(actorId, cron.ownerScopeId))) return true;
-  return app.managesScope(actorId, cron.ownerScopeId);
+  return canManageAutomation(app, cron, actorId, isActor, async () => {
+    const team = cron.runAs === "scopeFloor" || cron.runAs === "scopeShared";
+    if (team && cron.ownerScopeId === callerScopeId) return app.isCurrentSharedScopeMember(actorId, cron.ownerScopeId);
+    if (team && (await app.isOpenScopeMember(actorId, cron.ownerScopeId))) return true;
+    return app.managesScope(actorId, cron.ownerScopeId);
+  });
 }
 
 export async function canAdministerWebhook(
@@ -203,10 +204,7 @@ export async function canAdministerWebhook(
   actorId: string,
   isActor?: (id: string) => Promise<boolean>,
 ): Promise<boolean> {
-  if (await app.membershipControlsScope(webhook.ownerScopeId)) {
-    return app.managesScope(actorId, webhook.ownerScopeId);
-  }
-  return isActor ? isActor(webhook.owner) : app.samePerson(webhook.owner, actorId);
+  return canManageAutomation(app, webhook, actorId, isActor);
 }
 
 function withDefaultTimezone(schedule: CronSchedule, cap: CapabilityClaims): CronSchedule {
@@ -654,7 +652,7 @@ export function createControlService(app: App, scheduler?: Scheduler, admin?: Ad
         }
       }
       try {
-        const cron = await app.updateCron(id, patch);
+        const cron = await app.updateCron(id, patch, capability.actorId);
         if (!cron) return { ok: false, code: "not_found", message: `no cron ${id}` };
         const changeSummary: string[] = [];
         if (req.runtime !== undefined) changeSummary.push("runtime");
@@ -734,7 +732,7 @@ export function createControlService(app: App, scheduler?: Scheduler, admin?: Ad
       if (!cron) return { ok: false, code: "not_found", message: `no cron ${id}` };
       if (!(await canAdministerCron(app, cron, capability.actorId, capability.scopeId)))
         return { ok: false, code: "forbidden", message: "not your cron" };
-      await app.deleteCron(id);
+      await app.deleteCron(id, capability.actorId);
       await notifyEdit(cron, capability, ["deleted"]);
       return { ok: true };
     },
@@ -749,7 +747,7 @@ export function createControlService(app: App, scheduler?: Scheduler, admin?: Ad
         if (refusal) return { ok: false, code: "forbidden", message: refusal };
       }
       if (cron.enabled === enabled) return { ok: true, cron };
-      await app.setCronEnabled(id, enabled);
+      await app.setCronEnabled(id, enabled, capability.actorId);
       await notifyEdit(cron, capability, [`enabled=${enabled}`]);
       const after = await app.getCron(id);
       return { ok: true, cron: after ?? cron };
@@ -884,7 +882,7 @@ export function createControlService(app: App, scheduler?: Scheduler, admin?: Ad
       if (!webhook) return { ok: false, code: "not_found", message: `no webhook ${id}` };
       if (!(await canAdministerWebhook(app, webhook, capability.actorId)))
         return { ok: false, code: "forbidden", message: "not your webhook" };
-      await app.setWebhookEnabled(id, false);
+      await app.setWebhookEnabled(id, false, capability.actorId);
       return { ok: true };
     },
 

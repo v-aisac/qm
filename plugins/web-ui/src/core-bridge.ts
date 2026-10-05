@@ -1,3 +1,4 @@
+import { webhookEventOf, type WebhookEvent } from "./webhook-event.ts";
 import { reportHandledError, reportRequestTiming, stopBrowserErrors } from "./browser-errors.ts";
 import { captureMessage, stopAnalytics } from "./product-analytics.ts";
 import { streamedAnswer } from "./timeline.ts";
@@ -476,6 +477,7 @@ export interface ApprovalDecision {
   scope?: "once" | "session" | "always";
 }
 export type AssistantWork = AssistantMessage & {
+  entrySeqs?: number[];
   persisted?: boolean;
   streamingBaseline?: string;
   work?: WorkBlock;
@@ -1744,6 +1746,7 @@ interface HistoryUserMessage {
   edited?: boolean;
   deleted?: boolean;
   subagentMail?: SubagentMailRef;
+  webhookEvent?: WebhookEvent;
 }
 
 export interface SubagentMailRef {
@@ -1887,10 +1890,13 @@ export function userEntryMessage(
     ts?: string;
     attachments?: Array<{ name?: string; mimetype?: string; sizeBytes?: number; artifactId?: string }>;
   } | null;
-  if (payload?.hidden) return null;
-  const text = userEntryText(payload) ?? "";
+  const webhookEvent = payload?.hidden ? webhookEventOf(payload) : undefined;
+  if (payload?.hidden && !webhookEvent) return null;
+  const text = webhookEvent
+    ? [webhookEvent.action, webhookEvent.payload].filter(Boolean).join("\n\n")
+    : (userEntryText(payload) ?? "");
   const attachments = payload?.attachments ?? [];
-  if (!text && !attachments.length) return null;
+  if (!text && !attachments.length && !webhookEvent) return null;
   const mail = subagentMailOf(payload);
   return {
     role: "user",
@@ -1899,6 +1905,7 @@ export function userEntryMessage(
     content: text,
     timestamp: entry.createdAt,
     ...(mail ? { subagentMail: mail } : {}),
+    ...(webhookEvent ? { webhookEvent } : {}),
     ...(payload?.steered ? { steered: true } : {}),
     ...(typeof payload?.name === "string" && payload.name.trim() ? { speaker: payload.name.trim() } : {}),
     ...(typeof payload?.ts === "string" && payload.ts ? { ts: payload.ts } : {}),
@@ -1931,6 +1938,7 @@ export function appendConsumedSteers(messages: AgentMessage[], work: WorkBlock):
 export function entriesToMessages(entries: SessionEntry[], model?: Model<Api>): AgentMessage[] {
   const out: AgentMessage[] = [];
   const userByTs = new Map<string, HistoryUserMessage>();
+  const repliesByText = new Map<string, AssistantWork[]>();
   let pending: ToolActivity[] = [];
   let deliveryFiles: DeliveredFile[] = [];
   let posted = false;
@@ -2021,6 +2029,11 @@ export function entriesToMessages(entries: SessionEntry[], model?: Model<Api>): 
     }
     if (deliveryFiles.length) msg.deliveredFiles = deliveryFiles;
     out.push(msg as AgentMessage);
+    if (text.trim()) {
+      const replies = repliesByText.get(text.trim()) ?? [];
+      replies.push(msg);
+      repliesByText.set(text.trim(), replies);
+    }
     pending = [];
     deliveryFiles = [];
   };
@@ -2035,6 +2048,8 @@ export function entriesToMessages(entries: SessionEntry[], model?: Model<Api>): 
       steered?: boolean;
       name?: string;
       ts?: string;
+      overheard?: boolean;
+      sourceRole?: string;
       workStartedAt?: number;
       workFinishedAt?: number;
       stopped?: boolean;
@@ -2094,13 +2109,26 @@ export function entriesToMessages(entries: SessionEntry[], model?: Model<Api>): 
       continue;
     }
     if (e.type === "user") {
-      if (payload?.hidden) continue;
+      if (payload?.overheard && payload.sourceRole === "agent") {
+        if (payload.hidden) continue;
+        const original = repliesByText.get(text.trim())?.shift();
+        if (original) {
+          if (e.seq !== undefined) original.entrySeqs = [...(original.entrySeqs ?? []), e.seq];
+        } else {
+          spillHeldPosts();
+          flushWork("", e.createdAt);
+          flushWork(text, e.createdAt, false, undefined, false, e.seq === undefined ? [] : [e.seq]);
+          repliesByText.get(text.trim())?.pop();
+        }
+        continue;
+      }
+      const msg = userEntryMessage(e);
+      if (payload?.hidden && !msg) continue;
       if (!payload?.steered) {
         posted = false;
         spillHeldPosts();
         flushWork("", e.createdAt);
       }
-      const msg = userEntryMessage(e);
       if (msg) {
         if (msg.ts) userByTs.set(msg.ts, msg);
         if (msg.steered) {
