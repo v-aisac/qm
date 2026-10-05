@@ -529,10 +529,7 @@ async function slackReply(ctx: ApiCtx, send: boolean): Promise<void> {
   if (!source) return sendJson(ctx.res, 404, { error: "not_found" });
   const target = parseSlackThreadRef(source.session.threadRef);
   if (!target || !/^[CDG][A-Z0-9]+$/.test(target.container) || (target.root && !/^\d+\.\d+$/.test(target.root)))
-    return sendJson(ctx.res, 400, {
-      error: "not_slack",
-      message: "This conversation has no valid Slack destination. Replies are unavailable.",
-    });
+    return sendJson(ctx.res, 400, { error: "not_slack" });
   if (
     send &&
     (typeof body.text !== "string" ||
