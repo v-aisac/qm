@@ -30,7 +30,15 @@ export function activityOf(s: CoreSession): number {
 export type ChatBrowseStatus = "active" | "waiting" | "archived";
 
 export function sidebarSessions(sessions: readonly CoreSession[]): CoreSession[] {
-  return sessions.filter((session) => !session.parentSessionId);
+  return sessions.filter(
+    (session) =>
+      !session.parentSessionId &&
+      session.surface !== "webhook" &&
+      session.surface !== "cron" &&
+      !["webhook:", "cron:", "agent:main:webhook:", "agent:main:cron:"].some((prefix) =>
+        session.threadRef.startsWith(prefix),
+      ),
+  );
 }
 
 export function splitPinned<T extends Pick<CoreSession, "pinned">>(sessions: readonly T[]): { pinned: T[]; rest: T[] } {

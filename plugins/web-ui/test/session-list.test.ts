@@ -594,3 +594,12 @@ test("a goal lights the background chip with time worked, then the floor", () =>
   assert.equal(row?.label, "goal · 12m worked · 20m floor");
   assert.equal(backgroundLabel(0, 0, 0, 0, 0, { activeMs: 60_000 }, 9_999_999)?.label, "goal · 1m worked");
 });
+
+test("sidebar excludes scheduled and webhook worklogs, including pinned runs", () => {
+  const chat = saved("chat", "web:U1:chat");
+  const runs = ["cron:job:fire", "webhook:hook:event", "agent:main:cron:job", "agent:main:webhook:hook"].map(
+    (ref, i) => ({ ...saved(`run-${i}`, ref), pinned: true }),
+  );
+  const tagged = { ...saved("tagged", "external:run"), surface: "webhook" };
+  assert.deepEqual(sidebarSessions([chat, ...runs, tagged]), [chat]);
+});

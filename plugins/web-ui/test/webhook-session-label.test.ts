@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { harness } from "./deep-link-boot-fixture.ts";
 
-test("legacy and named webhook chats have webhook labels and icons", async () => {
+test("webhook worklogs retain their title without appearing in the session bar", async () => {
   const h = await harness({
     path: "/",
     listSessions: [
@@ -39,8 +39,8 @@ test("legacy and named webhook chats have webhook labels and icons", async () =>
       title: null,
     });
     assert.match(document.body.textContent ?? "", /Webhook run/);
-    assert.ok(document.querySelector('[aria-label="Webhook run"]'));
-    assert.match(document.body.textContent ?? "", /Review deployments/);
+    assert.equal(document.querySelector('.session-row a[href="/s/legacy-hook"]'), null);
+    assert.equal(document.querySelector('.session-row a[href="/s/named-hook"]'), null);
   } finally {
     await h.close();
   }
