@@ -3128,6 +3128,7 @@ export function serverDeps(
     ...(built.fireAskResolution ? { fireAskResolution: built.fireAskResolution } : {}),
     runs: built.runs,
     signals: built.signals,
+    sessionStateBus: built.sessionStateBus,
     workspace: built.workspace,
     files: built.files,
     ...(built.fileUploads ? { fileUploads: built.fileUploads } : {}),
