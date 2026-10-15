@@ -39,12 +39,20 @@ interface UiCanvasApi {
   send(text: string): Promise<boolean>;
 }
 
-type UiSignal =
-  { kind: "canvas" } | { kind: "observe"; callId: string; selector?: string; css?: boolean; screenshot?: boolean };
+type ObserveSignal = {
+  kind: "observe";
+  callId: string;
+  selector?: string;
+  css?: boolean;
+  screenshot?: boolean;
+  preview?: boolean;
+};
+type UiSignal = { kind: "canvas" } | ObserveSignal;
 
 declare global {
   interface Window {
     qmUiCanvasTake?: (sessionId: string, rev: number) => UiCanvasApi | undefined;
+    qmCanvasPreview?: { settled(): boolean; snapshot(signal: ObserveSignal): Promise<Record<string, unknown>> };
   }
 }
 
@@ -59,6 +67,39 @@ const panels = new Map<string, Panel>();
 const handoff = new Map<string, UiCanvasApi>();
 const waiting = new Map<string, Set<Owner>>();
 const announced = new Set<string>();
+
+const ALWAYS_ON = "always-on";
+const PREVIEW_PARAM = "qmCanvasPreview";
+const PREVIEW = typeof location !== "undefined" && new URLSearchParams(location.search).has(PREVIEW_PARAM);
+const PREVIEW_TIMEOUT_MS = 25_000;
+const PREVIEW_SETTLE_MS = 1_500;
+const sourceKey = new Map<string, string>();
+const previewErrors: string[] = [];
+let loadsDone = 0;
+
+if (PREVIEW) {
+  addEventListener("error", (e) => previewErrors.push(e.message || String(e.error)));
+  addEventListener("unhandledrejection", (e) => previewErrors.push(errMessage(e.reason)));
+  window.qmCanvasPreview = {
+    settled: () => loadsDone > 0 && loading.size === 0,
+    snapshot: async (signal) => ({ ...(await buildSnapshot(signal, [], [])), preview: true, errors: previewErrors }),
+  };
+}
+
+async function fetchCanvas(sessionId: string): Promise<CanvasRecord | null> {
+  const get = (key: string) =>
+    api<{ canvas: CanvasRecord }>(`/api/ui-canvas/${encodeURIComponent(key)}`).then((r) => {
+      sourceKey.set(sessionId, key);
+      return r.canvas;
+    });
+  if (PREVIEW)
+    try {
+      return await get(`draft-${sessionId}`);
+    } catch (error) {
+      if (!(error instanceof ApiError && error.status === 404)) throw error;
+    }
+  return get(sessionId);
+}
 
 function take(sessionId: string, rev: number): UiCanvasApi | undefined {
   const key = `${sessionId}#${rev}`;
@@ -80,8 +121,7 @@ function load(sessionId: string, owner?: Owner): void {
   }
   const state = { dirty: false };
   loading.set(sessionId, state);
-  void api<{ canvas: CanvasRecord }>(`/api/ui-canvas/${encodeURIComponent(sessionId)}`)
-    .then((r) => r.canvas)
+  void fetchCanvas(sessionId)
     .catch((error: unknown) => {
       if (error instanceof ApiError && error.status === 404) return null;
       reportHandledError("ui_canvas_load", error);
@@ -89,6 +129,7 @@ function load(sessionId: string, owner?: Owner): void {
     })
     .then((canvas) => {
       loading.delete(sessionId);
+      loadsDone++;
       if (state.dirty) return load(sessionId);
       if (canvas === undefined) return void waiting.delete(sessionId);
       loaded.set(sessionId, canvas);
@@ -105,25 +146,29 @@ function load(sessionId: string, owner?: Owner): void {
 export function uiCanvasPanel(owner: Owner): HTMLElement | typeof nothing {
   const sessionId = owner.chat.state.sessionId;
   for (const panel of panels.values())
-    if (panel.owner.chat === owner.chat && panel.sessionId !== sessionId) disposePanel(panel);
-  if (!sessionId || disabled()) return nothing;
-  if (!loaded.has(sessionId)) {
-    load(sessionId, owner);
-    return nothing;
-  }
+    if (panel.owner.chat === owner.chat && panel.sessionId !== sessionId && panel.sessionId !== ALWAYS_ON)
+      disposePanel(panel);
+  if (disabled()) return nothing;
+  mount(ALWAYS_ON, owner);
+  if (sessionId) mount(sessionId, owner);
+  return nothing;
+}
+
+function mount(sessionId: string, owner: Owner): void {
+  if (!loaded.has(sessionId)) return load(sessionId, owner);
   const canvas = loaded.get(sessionId);
-  if (!canvas) return nothing;
+  if (!canvas) return;
   let panel = panels.get(sessionId);
   if (!panel) {
     panel = createPanel(sessionId, owner);
     applyCanvas(panel, canvas);
   }
-  panel.owner = owner;
-  return panel.el;
+  if (sessionId !== ALWAYS_ON || !panel.owner.chat.state.sessionId) panel.owner = owner;
+  if (!panel.el.isConnected) document.body.append(panel.el);
 }
 
 export function resyncUiCanvas(open: Array<string | null>): void {
-  const keep = new Set([...panels.keys(), ...open.filter((id): id is string => Boolean(id))]);
+  const keep = new Set([ALWAYS_ON, ...panels.keys(), ...open.filter((id): id is string => Boolean(id))]);
   for (const sessionId of loaded.keys()) if (!keep.has(sessionId)) loaded.delete(sessionId);
   for (const sessionId of keep) load(sessionId);
 }
@@ -144,7 +189,7 @@ function createPanel(sessionId: string, owner: Owner): Panel {
     sessionId,
     el,
     head,
-    shadow: body.attachShadow({ mode: "open" }),
+    shadow: body.attachShadow({ mode: "open", serializable: true } as ShadowRootInit),
     canvas: null,
     expanded: false,
     owner,
@@ -209,7 +254,9 @@ function runScript(panel: Panel, canvas: CanvasRecord): void {
     send: (text) => sendFromCanvas(panel, text),
   });
   const script = document.createElement("script");
-  script.src = withBase(`/api/ui-canvas/${encodeURIComponent(panel.sessionId)}/script.js?rev=${canvas.rev}`);
+  script.src = withBase(
+    `/api/ui-canvas/${encodeURIComponent(sourceKey.get(panel.sessionId) ?? panel.sessionId)}/script.js?rev=${canvas.rev}`,
+  );
   script.onerror = () => {
     if (panel.script === script && !signal.aborted) load(panel.sessionId);
   };
@@ -275,6 +322,7 @@ async function update(panel: Panel, change: { pinned?: boolean; dismiss?: true }
 async function sendFromCanvas(panel: Panel, text: string): Promise<boolean> {
   const { chat, composer } = panel.owner;
   const agent = chat.state.agent;
+  if (PREVIEW) return false;
   if (panel.lifetime.signal.aborted || !agent || chat.state.sessionId !== panel.sessionId || !text.trim()) return false;
   const message = SENT_PREFIX + text.trim();
   if (agent.state.isStreaming) return (await chat.signalLiveRun("steer", message)).ok;
@@ -288,8 +336,10 @@ export function handleUiSignal(
   conversations: Conversation[],
   sessions: CoreSession[],
 ): void {
-  if (disabled() || !event.ui) return;
+  if (disabled() || !event.ui || PREVIEW) return;
   if (event.ui.kind === "canvas") {
+    announced.add(ALWAYS_ON);
+    load(ALWAYS_ON);
     const sessionId = event.sessionId;
     if (sessionId && (loaded.has(sessionId) || conversations.some((c) => c.state.sessionId === sessionId))) {
       announced.add(sessionId);
@@ -301,12 +351,14 @@ export function handleUiSignal(
 }
 
 async function answerObserve(
-  signal: Extract<UiSignal, { kind: "observe" }>,
+  signal: ObserveSignal,
   conversations: Conversation[],
   sessions: CoreSession[],
 ): Promise<void> {
   if (document.visibilityState !== "visible") await new Promise((r) => setTimeout(r, HIDDEN_TAB_DELAY_MS));
-  const snapshot = await buildSnapshot(signal, conversations, sessions).catch((error: unknown) => ({
+  const snapshot = await (
+    signal.preview ? previewSnapshot(signal) : buildSnapshot(signal, conversations, sessions)
+  ).catch((error: unknown) => ({
     error: errMessage(error),
   }));
   const post = (body: unknown) =>
@@ -319,6 +371,29 @@ async function answerObserve(
     .catch((error: unknown) => {
       if (!(error instanceof ApiError && error.status === 404)) reportHandledError("ui_observe_deliver", error);
     });
+}
+
+async function previewSnapshot(signal: ObserveSignal): Promise<Record<string, unknown>> {
+  const url = new URL(location.href);
+  url.searchParams.set(PREVIEW_PARAM, "1");
+  const frame = document.createElement("iframe");
+  frame.setAttribute("aria-hidden", "true");
+  frame.tabIndex = -1;
+  frame.style.cssText = `position:fixed;top:0;left:${-innerWidth - 100}px;width:${innerWidth}px;height:${innerHeight}px;border:0;pointer-events:none;`;
+  frame.src = url.toString();
+  document.body.append(frame);
+  try {
+    const deadline = Date.now() + PREVIEW_TIMEOUT_MS;
+    let hook: Window["qmCanvasPreview"];
+    while (!(hook = frame.contentWindow?.qmCanvasPreview)?.settled()) {
+      if (Date.now() > deadline) throw new Error("the preview copy of the app did not finish loading in time");
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    await new Promise((r) => setTimeout(r, PREVIEW_SETTLE_MS));
+    return await hook!.snapshot(signal);
+  } finally {
+    frame.remove();
+  }
 }
 
 function stylesheetText(): string {
@@ -350,6 +425,14 @@ function findTarget(selector: string | undefined): Element | null {
   return selector ? document.querySelector(selector) : document.documentElement;
 }
 
+function serializeWithShadow(el: Element): string {
+  const withShadow = el as Element & { getHTML?: (o: { serializableShadowRoots: boolean }) => string };
+  if (!withShadow.getHTML) return el.outerHTML;
+  const tag = el.tagName.toLowerCase();
+  const attrs = Array.from(el.attributes, (a) => ` ${a.name}="${a.value.replace(/"/g, "&quot;")}"`).join("");
+  return `<${tag}${attrs}>${withShadow.getHTML({ serializableShadowRoots: true })}</${tag}>`;
+}
+
 const byteLength = (value: unknown): number => new TextEncoder().encode(JSON.stringify(value)).length;
 
 export function fitSnapshot(
@@ -374,7 +457,7 @@ export function fitSnapshot(
 }
 
 async function buildSnapshot(
-  signal: Extract<UiSignal, { kind: "observe" }>,
+  signal: ObserveSignal,
   conversations: Conversation[],
   sessions: CoreSession[],
 ): Promise<Record<string, unknown>> {
@@ -409,7 +492,7 @@ async function buildSnapshot(
     })),
     selector: signal.selector ?? null,
     found: target !== null,
-    html: target?.outerHTML ?? null,
+    html: target ? serializeWithShadow(target) : null,
     ...(signal.css ? { css: stylesheetText() } : {}),
     ...(shot ? { screenshot: shot } : {}),
     sessions,

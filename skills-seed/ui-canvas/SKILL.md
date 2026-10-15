@@ -1,13 +1,20 @@
 ---
 name: ui-canvas
-description: Put a live panel of your own HTML/CSS/JS into this conversation's pane in the QM web UI — a dashboard, a form, a visualization, controls that message you back. Write, update, replace, pin or dismiss it. Use when an interactive or visual result beats a chat reply.
+description: Draw your own HTML/CSS/JS as a full-window overlay on top of the QM web UI — a dashboard, a form, a visualization, controls that message you back. Write, update, replace, pin or dismiss it. Use when an interactive or visual result beats a chat reply.
 ---
 
-# ui-canvas — a live panel in the person's web UI
+# ui-canvas — a full-window overlay on the person's web UI
+
+The canvas is a transparent layer covering the whole browser window (position: fixed,
+inset 0), above the sidebar, panes and composer. It ignores the mouse by default so the
+page underneath stays usable: set `pointer-events: auto` on any element of yours that
+should be clickable. Position things in viewport coordinates; use the ui-state skill or
+`getBoundingClientRect()` on page elements to aim at real UI. A small "Canvas" pill in the
+bottom-right corner lets the person hide, pin or close it.
 
 The canvas belongs to this conversation and to the person who started this turn. It shows
 in whichever pane has this conversation open, survives reloads and pane moves, and nobody
-else sees it — not other members of a shared conversation, not people viewing a share
+else sees it (see "Always on" below for one that follows them everywhere) — not other members of a shared conversation, not people viewing a share
 link. Requires a web turn the person started and the `ui_canvas` feature for them.
 
 **Your JavaScript runs in their page with their full session.** It can do anything they
@@ -21,8 +28,11 @@ can do in QM, with no sandbox. That is why it exists, and why you must hold to t
    request doesn't need (other conversations, inbox, keychain). Never call approval, keychain,
    sharing, admin or settings endpoints, and never click or submit QM's own controls.
    Approvals stay a human decision.
-3. Change only the canvas: no edits to the rest of the page, and no changes to their
-   account, conversations or other data that the request didn't ask for.
+3. You may restyle or modify the rest of the page when the person asks (fonts, themes,
+   layout tweaks, injected widgets): do it from the canvas script by adding a `<style>`
+   to `document.head` or editing DOM nodes, and undo them in `canvas.onDispose` so
+   dismissing the canvas restores the page. Don't change their account, conversations or
+   other data that the request didn't ask for.
 4. Load nothing from other origins: no remote scripts, no `fetch` to third parties.
 5. If the task needs any of that, do that part with your ordinary tools or ask the person
    to do it in the normal UI, and say why.
@@ -45,10 +55,32 @@ hand.
 
 - The reply is `{"canvas": {"rev", "pinned", "bytes"}}`. Pinning when there is no canvas
   returns 404 `no_canvas`.
+- Page-wide edits (e.g. "make all text Comic Sans") belong in the canvas js, usually an
+  always-on canvas so they persist across sessions.
 - `GET /v1/ui/canvas` returns `{"canvas": {html, css, js, pinned, rev}}` or
   `{"canvas": null}`. `DELETE /v1/ui/canvas` dismisses it.
 - Pinned canvases stay open; unpinned ones collapse after a reload. The person can pin,
   collapse or close it themselves.
+
+## Preview before going live
+
+Any write that restyles or edits the page outside the canvas, or any large rework, goes through a draft first:
+
+1. Write the draft: the same `POST /v1/ui/canvas` body plus `"draft": true` (and `"alwaysOn": true` if it targets the always-on canvas). Nothing changes on the person's screen.
+2. Look at it: `POST /v1/ui/observe` with `{"preview": true}`. The page loads a hidden, full copy of the app in the same tab, already signed in and on the same view, runs the draft there in place of the live canvas, and returns a snapshot of that copy: screenshot, html, and `errors` (script errors and rejections). Read the screenshot. Allow up to 30s.
+3. Fix and repeat until it looks right and `errors` is empty.
+4. Promote with `POST /v1/ui/canvas` `{"promote": true}` (plus `"alwaysOn": true` if needed), or discard with `DELETE /v1/ui/canvas?draft=true`.
+
+Text half-typed in the composer and exact scroll position are not carried into the copy.
+
+## Always on
+
+Pass `"alwaysOn": true` in the body (or `?alwaysOn=true` on GET/DELETE) to use the
+person's single always-on canvas instead of this conversation's. It shows across every
+session and pane in their web UI, on top of any conversation canvas, until it is
+dismissed. Use it only when they ask for something that should stay up everywhere (a
+persistent widget, HUD or tracker); default to the conversation canvas otherwise. Its
+script must not assume a particular session is open.
 
 ## Script environment
 

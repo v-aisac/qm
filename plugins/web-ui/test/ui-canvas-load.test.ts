@@ -5,11 +5,12 @@ import { uiCanvasPanel } from "../src/ui-canvas.ts";
 
 test("redraws during an in-flight canvas fetch do not restart it", async () => {
   let fetches = 0;
-  let release = () => {};
+  const releases: Array<() => void> = [];
+  const release = () => releases.splice(0).forEach((r) => r());
   const original = globalThis.fetch;
   globalThis.fetch = (async () => {
     fetches++;
-    await new Promise<void>((resolve) => (release = resolve));
+    await new Promise<void>((resolve) => releases.push(resolve));
     return new Response(JSON.stringify({ canvas: null }), { status: 200 });
   }) as typeof fetch;
   appState.me = { email: "a@example.com" } as unknown as typeof appState.me;
@@ -21,9 +22,9 @@ test("redraws during an in-flight canvas fetch do not restart it", async () => {
     for (let i = 0; i < 5; i++) uiCanvasPanel(owner);
     await new Promise((resolve) => setTimeout(resolve, 0));
     release();
-    for (let i = 0; i < 20 && redraws === 0; i++) await new Promise((resolve) => setTimeout(resolve, 5));
-    assert.equal(fetches, 1);
-    assert.equal(redraws, 1);
+    for (let i = 0; i < 20 && redraws < 2; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(fetches, 2, "one fetch each for the session and always-on canvas");
+    assert.ok(redraws >= 1);
   } finally {
     globalThis.fetch = original;
     appState.me = null;

@@ -21,6 +21,8 @@ import { swallow } from "../../util/errors.ts";
 import type { ApiCtx, Route } from "./route.ts";
 
 const OBSERVE_TIMEOUT_MS = 15_000;
+const PREVIEW_TIMEOUT_MS = 30_000;
+const DRAFT_PREFIX = "draft-";
 const MAX_SELECTOR_CHARS = 500;
 
 interface UiTurn {
@@ -93,10 +95,26 @@ function canvasSummary(canvas: UiCanvas | null): Record<string, unknown> | null 
   };
 }
 
+export const ALWAYS_ON_CANVAS = "always-on";
+
+function flag(ctx: ApiCtx, name: string): boolean {
+  const b = isObj(ctx.body) ? ctx.body : {};
+  const q = ctx.url.searchParams.get(name);
+  return b[name] === true || q === "true" || q === "1";
+}
+
+function liveKey(ctx: ApiCtx, turn: Pick<UiTurn, "sessionId">): string {
+  return flag(ctx, "alwaysOn") ? ALWAYS_ON_CANVAS : turn.sessionId;
+}
+
+function canvasKey(ctx: ApiCtx, turn: Pick<UiTurn, "sessionId">): string {
+  return (flag(ctx, "draft") ? DRAFT_PREFIX : "") + liveKey(ctx, turn);
+}
+
 async function getCanvas(ctx: ApiCtx): Promise<void> {
   const turn = await liveWebTurn(ctx);
   if (!turn) return;
-  return sendJson(ctx.res, 200, { canvas: await readUiCanvas(ctx.deps.uiState!, turn.actorId, turn.sessionId) });
+  return sendJson(ctx.res, 200, { canvas: await readUiCanvas(ctx.deps.uiState!, turn.actorId, canvasKey(ctx, turn)) });
 }
 
 function parsePatch(body: unknown): UiCanvasPatch | string {
@@ -123,7 +141,7 @@ async function applyCanvas(
 ): Promise<void> {
   let canvas: UiCanvas | null;
   try {
-    canvas = await writeUiCanvas(ctx.deps.uiState!, turn.actorId, turn.sessionId, patch);
+    canvas = await writeUiCanvas(ctx.deps.uiState!, turn.actorId, canvasKey(ctx, turn), patch);
   } catch (error) {
     if (!(error instanceof UiCanvasTooLargeError)) throw error;
     return sendJson(ctx.res, 413, {
@@ -133,20 +151,32 @@ async function applyCanvas(
   }
   if (patch && !canvas)
     return sendJson(ctx.res, 404, { error: "no_canvas", message: "there is no canvas yet; pass html, css or js" });
+  const draft = flag(ctx, "draft");
+  const verb = draft ? ["discard", "draft"] : ["dismiss", "write"];
   audit(ctx.deps, {
     principalId: turn.actorId,
-    action: patch ? "ui.canvas.write" : "ui.canvas.dismiss",
-    resource: `session:${turn.sessionId}`,
+    action: `ui.canvas.${verb[patch ? 1 : 0]}`,
+    resource: liveKey(ctx, turn) === ALWAYS_ON_CANVAS ? "ui:always-on" : `session:${turn.sessionId}`,
     scopeLabel: scopeId("personal", turn.actorId),
     ...(canvas ? { detail: `rev ${canvas.rev}` } : {}),
   });
-  signalBrowser(ctx, turn, { kind: "canvas" });
+  if (!draft) signalBrowser(ctx, turn, { kind: "canvas" });
   return sendJson(ctx.res, 200, { canvas: canvasSummary(canvas) });
+}
+
+async function promote(ctx: ApiCtx, turn: UiTurn): Promise<void> {
+  const store = ctx.deps.uiState!;
+  const live = liveKey(ctx, turn);
+  const draft = await readUiCanvas(store, turn.actorId, DRAFT_PREFIX + live);
+  if (!draft) return sendJson(ctx.res, 404, { error: "no_draft", message: "there is no draft to promote" });
+  await applyCanvas(ctx, turn, { html: draft.html, css: draft.css, js: draft.js, pinned: draft.pinned, replace: true });
+  await writeUiCanvas(store, turn.actorId, DRAFT_PREFIX + live, null);
 }
 
 async function postCanvas(ctx: ApiCtx): Promise<void> {
   const turn = await liveWebTurn(ctx);
   if (!turn) return;
+  if (isObj(ctx.body) && ctx.body.promote === true) return promote(ctx, turn);
   const patch = parsePatch(ctx.body);
   if (typeof patch === "string") return sendJson(ctx.res, 400, { error: "bad_request", message: patch });
   return applyCanvas(ctx, turn, patch);
@@ -181,11 +211,13 @@ async function observe(ctx: ApiCtx): Promise<void> {
     callId,
     ...(selector ? { selector } : {}),
     ...(b.css === true ? { css: true } : {}),
-    ...(b.screenshot === true ? { screenshot: true } : {}),
+    ...(b.screenshot === true || b.preview === true ? { screenshot: true } : {}),
+    ...(b.preview === true ? { preview: true } : {}),
   });
+  const timeoutMs = b.preview === true ? PREVIEW_TIMEOUT_MS : OBSERVE_TIMEOUT_MS;
   let outcome: Awaited<ReturnType<typeof waitForClientResult>>;
   try {
-    outcome = await waitForClientResult(deps.signals, turn.runId, callId, { timeoutMs: OBSERVE_TIMEOUT_MS });
+    outcome = await waitForClientResult(deps.signals, turn.runId, callId, { timeoutMs });
   } finally {
     await deps.uiState!.delete(pendingId).catch((error: unknown) => swallow("ui observe pending cleanup", error));
   }
@@ -199,7 +231,7 @@ async function observe(ctx: ApiCtx): Promise<void> {
   if (typeof outcome === "string") {
     return sendJson(res, 504, {
       error: "ui_not_open",
-      message: `No open web UI tab answered within ${OBSERVE_TIMEOUT_MS / 1000}s. The person may have closed QM; ask them to open it and retry.`,
+      message: `No open web UI tab answered within ${timeoutMs / 1000}s. The person may have closed QM; ask them to open it and retry.`,
     });
   }
   return sendJson(res, 200, { snapshot: outcome.structured ?? null });
