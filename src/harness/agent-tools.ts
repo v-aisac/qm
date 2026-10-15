@@ -1156,17 +1156,17 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
     name: "install_canvas",
     label: "install_canvas",
     description:
-      "Replace this person's always-on canvas with a sidebar someone shared with them as a Files record. Always asks them to approve first.",
-    parameters: Type.Object({ id: Type.String({ description: "Files ID of the shared sidebar." }) }),
+      "Replace this person's always-on canvas with a copy of an always-on canvas someone shared with them as a Files record. Always asks them to approve first.",
+    parameters: Type.Object({ id: Type.String({ description: "Files ID of the shared canvas." }) }),
     async execute(callId, params) {
       const tc = ref.current;
-      if (!tc?.installSharedCanvas) return text("[error] installing a shared sidebar isn't available on this turn");
+      if (!tc?.installSharedCanvas) return text("[error] installing a shared canvas isn't available on this turn");
       await recordCall(callId, { tool: "files", action: "install_canvas", id: params.id });
       const error = await tc.installSharedCanvas(params.id);
       return recordResult(
         callId,
         { tool: "files", action: "install_canvas", id: params.id, ...(error ? { error } : {}) },
-        text(error ? `[error] ${error}` : "Installed the shared sidebar as their always-on canvas."),
+        text(error ? `[error] ${error}` : "Installed the shared canvas as their always-on canvas."),
         Boolean(error),
       );
     },
@@ -4504,7 +4504,7 @@ function withRetrySafety(tool: ToolDefinition, marks: Map<string, RetryMark>): T
 
 const TOOL_APPROVAL_EXEMPT = new Set(["finish_silently"]);
 export const GATED_TOOL_APPROVALS: Record<string, string> = {
-  "files:install_canvas": "install a sidebar someone shared with you; its code runs in your QM web UI",
+  "files:install_canvas": "install an always-on canvas someone shared with you; its code runs in your QM web UI",
 };
 const STRICT_TOOL_APPROVAL_REASON = "strict posture: this tool call requires human approval";
 

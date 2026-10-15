@@ -21,18 +21,12 @@ export interface UiCanvasPatch {
 
 export const ALWAYS_ON_CANVAS = "always-on";
 
-const SESSION_ID_PATTERN = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
-
 export interface UiCanvasRef {
   target: string;
   draft?: boolean;
 }
 
 export class UiCanvasTooLargeError extends Error {}
-
-export function isUiCanvasTarget(target: string): boolean {
-  return target === ALWAYS_ON_CANVAS || SESSION_ID_PATTERN.test(target);
-}
 
 function uiCanvasKey({ target, draft }: UiCanvasRef): string {
   return `canvas:${draft ? "draft" : "live"}:${target}`;
@@ -111,15 +105,15 @@ export async function installSharedCanvas(
   try {
     shared = JSON.parse(data.toString("utf8")) as Record<string, unknown>;
   } catch (error) {
-    return `not a shared sidebar: ${errMessage(error)}`;
+    return `not a shared canvas: ${errMessage(error)}`;
   }
   const [html = "", css = "", js = ""] = [shared?.html, shared?.css, shared?.js];
   if (typeof html !== "string" || typeof css !== "string" || typeof js !== "string")
-    return "not a shared sidebar: html, css and js must be strings";
+    return "not a shared canvas: html, css and js must be strings";
   try {
     return (await writeUiCanvas(store, principalId, { target: ALWAYS_ON_CANVAS }, { html, css, js, replace: true }))!;
   } catch (error) {
-    if (error instanceof UiCanvasTooLargeError) return "the shared sidebar is too large";
+    if (error instanceof UiCanvasTooLargeError) return "the shared canvas is too large";
     throw error;
   }
 }

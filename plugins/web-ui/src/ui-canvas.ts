@@ -359,7 +359,18 @@ export function handleUiSignal(
     }
     return;
   }
-  void answerObserve(event.ui, conversations, sessions);
+  void observeOnce(event.ui, conversations, sessions);
+}
+
+async function observeOnce(
+  signal: ObserveSignal,
+  conversations: Conversation[],
+  sessions: CoreSession[],
+): Promise<void> {
+  if (document.visibilityState !== "visible") await new Promise((r) => setTimeout(r, HIDDEN_TAB_DELAY_MS));
+  await navigator.locks.request(`qm-observe:${signal.callId}`, { ifAvailable: true }, (lock) =>
+    lock ? answerObserve(signal, conversations, sessions) : undefined,
+  );
 }
 
 async function answerObserve(
@@ -367,11 +378,6 @@ async function answerObserve(
   conversations: Conversation[],
   sessions: CoreSession[],
 ): Promise<void> {
-  if (document.visibilityState !== "visible") await new Promise((r) => setTimeout(r, HIDDEN_TAB_DELAY_MS));
-  const claim = `qm-observe:${signal.callId}`;
-  if (localStorage.getItem(claim)) return;
-  localStorage.setItem(claim, "1");
-  setTimeout(() => localStorage.removeItem(claim), 60_000);
   const snapshot = await (
     signal.preview ? previewSnapshot(signal) : buildSnapshot(signal, conversations, sessions)
   ).catch((error: unknown) => ({
@@ -445,7 +451,10 @@ function serializeWithShadow(el: Element): string {
   const withShadow = el as Element & { getHTML?: (o: { serializableShadowRoots: boolean }) => string };
   if (!withShadow.getHTML) return el.outerHTML;
   const tag = el.tagName.toLowerCase();
-  const attrs = Array.from(el.attributes, (a) => ` ${a.name}="${a.value.replace(/"/g, "&quot;")}"`).join("");
+  const attrs = Array.from(
+    el.attributes,
+    (a) => ` ${a.name}="${a.value.replaceAll("&", "&amp;").replaceAll('"', "&quot;")}"`,
+  ).join("");
   return `<${tag}${attrs}>${withShadow.getHTML({ serializableShadowRoots: true })}</${tag}>`;
 }
 

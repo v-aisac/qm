@@ -3,7 +3,6 @@ import { isTerminal } from "../../runs/run-store.ts";
 import { waitForClientResult } from "../../runs/run-signal-store.ts";
 import type { UiSignal } from "../../runs/session-state-bus.ts";
 import {
-  isUiCanvasTarget,
   type UiCanvasRef,
   readUiCanvas,
   uiObserveKey,
@@ -63,7 +62,7 @@ async function liveWebTurn(ctx: ApiCtx): Promise<UiTurn | null> {
     return null;
   }
   const session = await deps.sessions.getByThread(threadRef);
-  if (!session || !isUiCanvasTarget(session.id)) {
+  if (!session) {
     sendJson(res, 404, { error: "not_found", message: "no such conversation" });
     return null;
   }
@@ -256,10 +255,14 @@ async function canvasEnabled(ctx: ApiCtx, principalId: string): Promise<boolean>
   return (await ctx.deps.featureFlags?.enabled("ui_canvas", scopeId("personal", principalId))) === true;
 }
 
+async function isCanvasTarget(ctx: ApiCtx, target: string): Promise<boolean> {
+  return target === ALWAYS_ON_CANVAS || Boolean(await ctx.deps.sessions?.get(target));
+}
+
 async function userCanvasContent(ctx: ApiCtx): Promise<void> {
   const { res, deps, url, params } = ctx;
   const principalId = url.searchParams.get("principalId") ?? "";
-  if (!principalId || !isUiCanvasTarget(params.sessionId!))
+  if (!principalId || !(await isCanvasTarget(ctx, params.sessionId!)))
     return sendJson(res, 400, { error: "bad_request", message: "principalId and a session id required" });
   if (!deps.uiState || !(await canvasEnabled(ctx, principalId))) return sendJson(res, 404, { error: "not_found" });
   const ref = { target: params.sessionId!, draft: url.searchParams.get("draft") === "1" };
@@ -272,7 +275,7 @@ async function userCanvas(ctx: ApiCtx): Promise<void> {
   const b = isObj(body) ? body : {};
   const principalId = typeof b.principalId === "string" ? b.principalId : "";
   const sessionId = params.sessionId!;
-  if (!principalId || !isUiCanvasTarget(sessionId))
+  if (!principalId || !(await isCanvasTarget(ctx, sessionId)))
     return sendJson(res, 400, { error: "bad_request", message: "principalId and a session id required" });
   if (!deps.uiState || !(await canvasEnabled(ctx, principalId))) return sendJson(res, 404, { error: "not_found" });
   if (b.dismiss !== true && typeof b.pinned !== "boolean")

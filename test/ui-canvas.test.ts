@@ -134,7 +134,7 @@ describe("ui canvas and ui observe", () => {
   it("installs a shared sidebar file as the always-on canvas", async () => {
     const file = (body: string) => ({ stream: Readable.from([Buffer.from(body)]) });
     assert.equal(await installSharedCanvas(built.uiState, "U2", null), "no such file is shared with you");
-    assert.match(String(await installSharedCanvas(built.uiState, "U2", file("{"))), /^not a shared sidebar: .*JSON/);
+    assert.match(String(await installSharedCanvas(built.uiState, "U2", file("{"))), /^not a shared canvas: .*JSON/);
     assert.match(String(await installSharedCanvas(built.uiState, "U2", file('{"js":1}'))), /must be strings/);
     await installSharedCanvas(built.uiState, "U2", file('{"html":"<nav/>","js":"1"}'));
     const live = await readUiCanvas(built.uiState, "U2", { target: "always-on" });

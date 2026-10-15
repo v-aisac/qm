@@ -55,8 +55,8 @@ export function uiCanvasRoutes(d: UiCanvasRouteDeps) {
         let canvas: { js?: unknown; rev?: unknown } | undefined;
         try {
           canvas = (JSON.parse(r.text) as { canvas?: { js?: unknown; rev?: unknown } }).canvas;
-        } catch {
-          return d.json(res, 502, { error: "bad_core_response" });
+        } catch (error) {
+          return d.json(res, 502, { error: "bad_core_response", message: String(error) });
         }
         if (typeof canvas?.js !== "string") return d.json(res, 404, { error: "not_found" });
         if (String(canvas.rev) !== url.searchParams.get("rev")) return d.json(res, 409, { error: "stale_revision" });
