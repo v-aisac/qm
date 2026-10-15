@@ -72,6 +72,7 @@ const ALWAYS_ON = "always-on";
 const PREVIEW_PARAM = "qmCanvasPreview";
 const PREVIEW = typeof location !== "undefined" && new URLSearchParams(location.search).has(PREVIEW_PARAM);
 const PREVIEW_TIMEOUT_MS = 25_000;
+const OBSERVE_WINDOW_MS = 30_000;
 const PREVIEW_SETTLE_MS = 1_500;
 const sourceQuery = new Map<string, string>();
 const previewErrors: string[] = [];
@@ -267,7 +268,9 @@ function runScript(panel: Panel, canvas: CanvasRecord): void {
     `/api/ui-canvas/${encodeURIComponent(panel.sessionId)}/script.js${sourceQuery.get(panel.sessionId) || "?"}&rev=${canvas.rev}`,
   );
   script.onerror = () => {
-    if (panel.script === script && !signal.aborted) load(panel.sessionId);
+    if (panel.script !== script || signal.aborted) return;
+    reportHandledError("ui_canvas_script", new Error(`canvas script failed to load (rev ${canvas.rev})`));
+    load(panel.sessionId);
   };
   panel.script = script;
   panel.el.append(script);
@@ -369,7 +372,9 @@ async function observeOnce(
 ): Promise<void> {
   if (document.visibilityState !== "visible") await new Promise((r) => setTimeout(r, HIDDEN_TAB_DELAY_MS));
   await navigator.locks.request(`qm-observe:${signal.callId}`, { ifAvailable: true }, (lock) =>
-    lock ? answerObserve(signal, conversations, sessions) : undefined,
+    lock
+      ? answerObserve(signal, conversations, sessions).then(() => new Promise((r) => setTimeout(r, OBSERVE_WINDOW_MS)))
+      : undefined,
   );
 }
 
@@ -388,10 +393,15 @@ async function answerObserve(
       method: "POST",
       body: JSON.stringify({ snapshot: body }),
     });
+  const answered = (error: unknown) => error instanceof ApiError && error.status === 404;
   await post(snapshot)
-    .catch((error: unknown) => post({ error: `the snapshot could not be delivered: ${errMessage(error)}` }))
     .catch((error: unknown) => {
-      if (!(error instanceof ApiError && error.status === 404)) reportHandledError("ui_observe_deliver", error);
+      if (answered(error)) return;
+      reportHandledError("ui_observe_deliver", error);
+      return post({ error: `the snapshot could not be delivered: ${errMessage(error)}` });
+    })
+    .catch((error: unknown) => {
+      if (!answered(error)) reportHandledError("ui_observe_deliver", error);
     });
 }
 

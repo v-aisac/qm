@@ -82,11 +82,11 @@ dismissed. Use it only when they ask for something that should stay up everywher
 persistent widget, HUD or tracker); default to the conversation canvas otherwise. Its
 script must not assume a particular session is open.
 
-## Sharing the sidebar
+## Sharing the always-on canvas
 
 Only when the person asks to share their always-on canvas with someone:
 
-1. Save it: `GET /v1/ui/canvas?alwaysOn=true`, write `{"html","css","js"}` from the response to `sidebar.json`, upload it with Files, and share that file with each recipient.
+1. Save it: `GET /v1/ui/canvas?alwaysOn=true`, write `{"html","css","js"}` from the response to `canvas.json`, upload it with Files, and share that file with each recipient.
 2. Tell each recipient with `POST /v1/reach` (`recipient`): who shared it, what it does, and that they can ask QM to install it. Include the file ID.
 
 When someone asks to install one, use files action `install_canvas` with the file ID. It asks them to approve, then replaces their always-on canvas with that copy. It is a snapshot: to update it, share again. They remove it by closing the canvas.
@@ -99,7 +99,8 @@ Content Security Policy blocks inline `<script>` and `on*=` attributes: put all 
 
 - `canvas.root` — the shadow root; use `canvas.root.querySelector(...)`.
 - `canvas.send(text)` — posts `text` to this conversation as a message prefixed
-  `[canvas]`. Resolves `false` if it couldn't (for example, the person is typing).
+  `[canvas]`. Resolves `false` if it couldn't (for example, the person is typing). Always
+  `false` on the always-on canvas, which belongs to no single conversation.
 - `canvas.signal` / `canvas.onDispose(fn)` — the canvas is replaced, dismissed or its pane
   closed. Pass `signal` to listeners and `fetch`, and clear timers in `onDispose`.
 

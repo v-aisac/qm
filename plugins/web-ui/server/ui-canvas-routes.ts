@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { errMessage } from "../../chassis/src/errors.ts";
 
 interface CoreReply {
   status: number;
@@ -56,7 +57,8 @@ export function uiCanvasRoutes(d: UiCanvasRouteDeps) {
         try {
           canvas = (JSON.parse(r.text) as { canvas?: { js?: unknown; rev?: unknown } }).canvas;
         } catch (error) {
-          return d.json(res, 502, { error: "bad_core_response", message: String(error) });
+          console.error("[web-ui] canvas script: bad core response", errMessage(error));
+          return d.json(res, 502, { error: "bad_core_response", message: errMessage(error) });
         }
         if (typeof canvas?.js !== "string") return d.json(res, 404, { error: "not_found" });
         if (String(canvas.rev) !== url.searchParams.get("rev")) return d.json(res, 409, { error: "stale_revision" });
