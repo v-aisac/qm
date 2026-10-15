@@ -198,6 +198,7 @@ export interface ServerDeps {
   scheduler?: Scheduler;
   webhookReceiver?: WebhookReceiver;
   loopIngress?: LoopIngressService;
+  slackUserEvents?: import("../loops/slack-user-events.ts").SlackUserEvents;
   identity?: IdentityService;
   principalLinks?: PrincipalLinkService;
   keychain?: Keychain;
