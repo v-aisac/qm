@@ -7,6 +7,7 @@ import {
   readUiCanvas,
   uiObserveKey,
   UiCanvasTooLargeError,
+  ALWAYS_ON_CANVAS,
   writeUiCanvas,
   type UiCanvas,
   type UiCanvasPatch,
@@ -94,8 +95,6 @@ function canvasSummary(canvas: UiCanvas | null): Record<string, unknown> | null 
     bytes: { html: canvas.html.length, css: canvas.css.length, js: canvas.js.length },
   };
 }
-
-export const ALWAYS_ON_CANVAS = "always-on";
 
 function flag(ctx: ApiCtx, name: string): boolean {
   const b = isObj(ctx.body) ? ctx.body : {};

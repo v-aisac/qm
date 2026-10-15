@@ -1,3 +1,6 @@
+import type { Readable } from "node:stream";
+import { collectBytes } from "../util/bytes.ts";
+import { errMessage } from "../util/errors.ts";
 import { uiStateId, UI_STATE_MAX_BYTES, type PersistedUiState, type UiStateStore } from "./ui-state.ts";
 
 export interface UiCanvas {
@@ -15,6 +18,8 @@ export interface UiCanvasPatch {
   pinned?: boolean;
   replace?: boolean;
 }
+
+export const ALWAYS_ON_CANVAS = "always-on";
 
 const SESSION_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,53}$/;
 
@@ -88,4 +93,28 @@ export async function writeUiCanvas(
   if (!store.update || !store.insertIfAbsent) await store.put(id, apply(await store.get(id)));
   else while (!(await store.update(id, apply)) && !(await store.insertIfAbsent(id, apply(null))));
   return asCanvas(written);
+}
+
+export async function installSharedCanvas(
+  store: UiStateStore,
+  principalId: string,
+  file: { stream: Readable } | null,
+): Promise<UiCanvas | string> {
+  if (!file) return "no such file is shared with you";
+  let shared: Record<string, unknown>;
+  try {
+    const { data } = await collectBytes(file.stream, { maxBytes: UI_STATE_MAX_BYTES });
+    shared = JSON.parse(data.toString("utf8")) as Record<string, unknown>;
+  } catch (error) {
+    return `not a shared sidebar: ${errMessage(error)}`;
+  }
+  const [html = "", css = "", js = ""] = [shared?.html, shared?.css, shared?.js];
+  if (typeof html !== "string" || typeof css !== "string" || typeof js !== "string")
+    return "not a shared sidebar: html, css and js must be strings";
+  try {
+    return (await writeUiCanvas(store, principalId, ALWAYS_ON_CANVAS, { html, css, js, replace: true }))!;
+  } catch (error) {
+    if (error instanceof UiCanvasTooLargeError) return "the shared sidebar is too large";
+    throw error;
+  }
 }

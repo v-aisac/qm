@@ -1152,6 +1152,26 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
     },
   });
 
+  const installCanvas = defineTool({
+    name: "install_canvas",
+    label: "install_canvas",
+    description:
+      "Replace this person's always-on canvas with a sidebar someone shared with them as a Files record. Always asks them to approve first.",
+    parameters: Type.Object({ id: Type.String({ description: "Files ID of the shared sidebar." }) }),
+    async execute(callId, params) {
+      const tc = ref.current;
+      if (!tc?.installSharedCanvas) return text("[error] installing a shared sidebar isn't available on this turn");
+      await recordCall(callId, { tool: "files", action: "install_canvas", id: params.id });
+      const error = await tc.installSharedCanvas(params.id);
+      return recordResult(
+        callId,
+        { tool: "files", action: "install_canvas", id: params.id, ...(error ? { error } : {}) },
+        text(error ? `[error] ${error}` : "Installed the shared sidebar as their always-on canvas."),
+        Boolean(error),
+      );
+    },
+  });
+
   const write = defineTool({
     name: "write",
     label: "write",
@@ -4310,7 +4330,12 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
       read: skill,
       ...(controlTools ? { share: sharingTool("skill"), move: sharingTool("skill", true) } : {}),
     }),
-    resourceTool("files", { read, write, ...(controlTools ? { share: sharingTool("file") } : {}) }),
+    resourceTool("files", {
+      read,
+      write,
+      ...(controlTools ? { share: sharingTool("file") } : {}),
+      ...(ref.current?.installSharedCanvas ? { install_canvas: installCanvas } : {}),
+    }),
     resourceTool("apps", {
       publish,
       ...(controlTools ? { share: sharingTool("deploy"), move: sharingTool("deploy", true) } : {}),
@@ -4478,6 +4503,9 @@ function withRetrySafety(tool: ToolDefinition, marks: Map<string, RetryMark>): T
 }
 
 const TOOL_APPROVAL_EXEMPT = new Set(["finish_silently"]);
+export const GATED_TOOL_APPROVALS: Record<string, string> = {
+  "files:install_canvas": "install a sidebar someone shared with you; its code runs in your QM web UI",
+};
 const STRICT_TOOL_APPROVAL_REASON = "strict posture: this tool call requires human approval";
 
 function withToolApprovalGate(
@@ -4512,11 +4540,13 @@ function withToolApprovalGate(
         : tool.name;
       const commandLabel = resourceAction ? `${tool.name} ${resourceAction}` : tool.name;
       if (gate && !gate(approvalIdentity)) {
+        const reason = GATED_TOOL_APPROVALS[approvalIdentity] ?? STRICT_TOOL_APPROVAL_REASON;
         ref.pendingApprovals?.push({
           command: commandLabel,
-          reason: STRICT_TOOL_APPROVAL_REASON,
+          reason,
           kind: "approval",
           approvalKey: `tool:${approvalIdentity}`,
+          ...(GATED_TOOL_APPROVALS[approvalIdentity] ? { grantModes: { session: false, always: false } } : {}),
           ...(params === undefined ? {} : { summary: redactCommand(redactSecrets(JSON.stringify(params))) }),
           ...(isObj(params) && typeof params.purpose === "string" ? { purpose: params.purpose } : {}),
         });
@@ -4526,7 +4556,7 @@ function withToolApprovalGate(
           ...(resourceAction ? { action: resourceAction } : {}),
           ...(isObj(params) && typeof params.purpose === "string" ? { purpose: params.purpose } : {}),
           blocked: "needs_approval",
-          reason: STRICT_TOOL_APPROVAL_REASON,
+          reason,
         });
         return rec.recordResult(
           callId,
@@ -4534,12 +4564,10 @@ function withToolApprovalGate(
             tool: tool.name,
             ...(resourceAction ? { action: resourceAction } : {}),
             blocked: "needs_approval",
-            reason: STRICT_TOOL_APPROVAL_REASON,
+            reason,
           },
           {
-            content: [
-              { type: "text" as const, text: `[blocked: needs human approval] ${STRICT_TOOL_APPROVAL_REASON}` },
-            ],
+            content: [{ type: "text" as const, text: `[blocked: needs human approval] ${reason}` }],
             details: {},
             terminate: true,
           },
