@@ -137,7 +137,7 @@ describe("ui canvas and ui observe", () => {
     assert.match(String(await installSharedCanvas(built.uiState, "U2", file("{"))), /^not a shared sidebar: .*JSON/);
     assert.match(String(await installSharedCanvas(built.uiState, "U2", file('{"js":1}'))), /must be strings/);
     await installSharedCanvas(built.uiState, "U2", file('{"html":"<nav/>","js":"1"}'));
-    const live = await readUiCanvas(built.uiState, "U2", "always-on");
+    const live = await readUiCanvas(built.uiState, "U2", { target: "always-on" });
     assert.deepEqual([live?.html, live?.css, live?.js], ["<nav/>", "", "1"]);
   });
 
@@ -174,7 +174,7 @@ describe("ui canvas and ui observe", () => {
   });
 
   it("keeps canvas and observe keys out of the generic ui-state API", async () => {
-    for (const key of [`ui-canvas-${sessionId}`, "ui-observe-abc"]) {
+    for (const key of [`canvas:live:${sessionId}`, "observe:abc"]) {
       const put = await source("PUT", "/v1/ui-state", { principalId: "U1", key, value: { runId: "run-live" } });
       assert.equal(put.status, 400, key);
       assert.equal((await source("GET", `/v1/ui-state?principalId=U1&key=${key}`)).status, 400, key);
@@ -216,7 +216,7 @@ describe("ui canvas and ui observe", () => {
 
   it("does not deliver a result into a run the person does not own", async () => {
     runs.set("run-other", { id: "run-other", status: "running", request: { actor: { id: "U2" } } });
-    await built.uiState.put(uiStateId("U1", "ui-observe-forged"), { value: { runId: "run-other" }, updatedAt: 1 });
+    await built.uiState.put(uiStateId("U1", "observe:forged"), { value: { runId: "run-other" }, updatedAt: 1 });
     const r = await source("POST", "/v1/ui/observe/forged/result", { principalId: "U1", snapshot: {} });
     assert.equal(r.status, 404);
   });

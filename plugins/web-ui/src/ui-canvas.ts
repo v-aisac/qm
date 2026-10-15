@@ -73,7 +73,7 @@ const PREVIEW_PARAM = "qmCanvasPreview";
 const PREVIEW = typeof location !== "undefined" && new URLSearchParams(location.search).has(PREVIEW_PARAM);
 const PREVIEW_TIMEOUT_MS = 25_000;
 const PREVIEW_SETTLE_MS = 1_500;
-const sourceKey = new Map<string, string>();
+const sourceQuery = new Map<string, string>();
 const previewErrors: string[] = [];
 let loadsDone = 0;
 
@@ -87,18 +87,18 @@ if (PREVIEW) {
 }
 
 async function fetchCanvas(sessionId: string): Promise<CanvasRecord | null> {
-  const get = (key: string) =>
-    api<{ canvas: CanvasRecord }>(`/api/ui-canvas/${encodeURIComponent(key)}`).then((r) => {
-      sourceKey.set(sessionId, key);
+  const get = (query: string) =>
+    api<{ canvas: CanvasRecord }>(`/api/ui-canvas/${encodeURIComponent(sessionId)}${query}`).then((r) => {
+      sourceQuery.set(sessionId, query);
       return r.canvas;
     });
   if (PREVIEW)
     try {
-      return await get(`draft-${sessionId}`);
+      return await get("?draft=1");
     } catch (error) {
       if (!(error instanceof ApiError && error.status === 404)) throw error;
     }
-  return get(sessionId);
+  return get("");
 }
 
 function take(sessionId: string, rev: number): UiCanvasApi | undefined {
@@ -177,6 +177,8 @@ export function releaseUiCanvas(conv: Conversation): void {
   for (const panel of panels.values()) if (panel.owner.chat === conv) disposePanel(panel);
 }
 
+let dock: HTMLElement | null = null;
+
 function createPanel(sessionId: string, owner: Owner): Panel {
   const el = document.createElement("div");
   el.className = "ui-canvas";
@@ -184,7 +186,13 @@ function createPanel(sessionId: string, owner: Owner): Panel {
   head.className = "ui-canvas-head";
   const body = document.createElement("div");
   body.className = "ui-canvas-body";
-  el.append(head, body);
+  el.append(body);
+  if (!dock) {
+    dock = document.createElement("div");
+    dock.className = "ui-canvas-dock";
+  }
+  if (!dock.isConnected) document.body.append(dock);
+  dock.append(head);
   const panel: Panel = {
     sessionId,
     el,
@@ -218,6 +226,7 @@ function cleanup(panel: Panel): void {
 function disposePanel(panel: Panel): void {
   cleanup(panel);
   panel.el.remove();
+  panel.head.remove();
   panels.delete(panel.sessionId);
 }
 
@@ -255,7 +264,7 @@ function runScript(panel: Panel, canvas: CanvasRecord): void {
   });
   const script = document.createElement("script");
   script.src = withBase(
-    `/api/ui-canvas/${encodeURIComponent(sourceKey.get(panel.sessionId) ?? panel.sessionId)}/script.js?rev=${canvas.rev}`,
+    `/api/ui-canvas/${encodeURIComponent(panel.sessionId)}/script.js${sourceQuery.get(panel.sessionId) || "?"}&rev=${canvas.rev}`,
   );
   script.onerror = () => {
     if (panel.script === script && !signal.aborted) load(panel.sessionId);
@@ -272,10 +281,10 @@ function drawHead(panel: Panel): void {
   panel.el.classList.toggle("pinned", canvas.pinned);
   render(
     html`<span class="ui-canvas-title" title="Written by the agent. Its code runs in this page with your session."
-        >Canvas</span
+        >${panel.sessionId === ALWAYS_ON ? "Always-on" : "Canvas"}</span
       >
       <button
-        class="icon-btn"
+        class="icon-btn compact"
         aria-pressed=${canvas.pinned}
         title=${canvas.pinned ? "Unpin canvas" : "Pin canvas open"}
         @click=${() => void update(panel, { pinned: !canvas.pinned })}
@@ -286,7 +295,7 @@ function drawHead(panel: Panel): void {
         canvas.pinned
           ? nothing
           : html`<button
-              class="icon-btn"
+              class="icon-btn compact"
               aria-expanded=${open}
               title=${open ? "Collapse canvas" : "Expand canvas"}
               @click=${() => {
@@ -297,7 +306,7 @@ function drawHead(panel: Panel): void {
               ${icon(open ? ChevronUp : ChevronDown, 13)}
             </button>`
       }
-      <button class="icon-btn" title="Close canvas" @click=${() => void update(panel, { dismiss: true })}>
+      <button class="icon-btn compact" title="Close canvas" @click=${() => void update(panel, { dismiss: true })}>
         ${icon(X, 13)}
       </button>`,
     panel.head,
@@ -316,7 +325,10 @@ async function update(panel: Panel, change: { pinned?: boolean; dismiss?: true }
   await api(`/api/ui-canvas/${encodeURIComponent(panel.sessionId)}`, {
     method: "POST",
     body: JSON.stringify(change),
-  }).catch(() => load(panel.sessionId));
+  }).catch((error: unknown) => {
+    reportHandledError("ui_canvas_update", error);
+    load(panel.sessionId);
+  });
 }
 
 async function sendFromCanvas(panel: Panel, text: string): Promise<boolean> {
@@ -356,6 +368,10 @@ async function answerObserve(
   sessions: CoreSession[],
 ): Promise<void> {
   if (document.visibilityState !== "visible") await new Promise((r) => setTimeout(r, HIDDEN_TAB_DELAY_MS));
+  const claim = `qm-observe:${signal.callId}`;
+  if (localStorage.getItem(claim)) return;
+  localStorage.setItem(claim, "1");
+  setTimeout(() => localStorage.removeItem(claim), 60_000);
   const snapshot = await (
     signal.preview ? previewSnapshot(signal) : buildSnapshot(signal, conversations, sessions)
   ).catch((error: unknown) => ({

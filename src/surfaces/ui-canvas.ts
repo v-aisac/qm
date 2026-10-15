@@ -21,20 +21,25 @@ export interface UiCanvasPatch {
 
 export const ALWAYS_ON_CANVAS = "always-on";
 
-const SESSION_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,53}$/;
+const SESSION_ID_PATTERN = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
+
+export interface UiCanvasRef {
+  target: string;
+  draft?: boolean;
+}
 
 export class UiCanvasTooLargeError extends Error {}
 
-export function isUiCanvasSessionId(sessionId: string): boolean {
-  return SESSION_ID_PATTERN.test(sessionId);
+export function isUiCanvasTarget(target: string): boolean {
+  return target === ALWAYS_ON_CANVAS || SESSION_ID_PATTERN.test(target);
 }
 
-function uiCanvasKey(sessionId: string): string {
-  return `ui-canvas-${sessionId}`;
+function uiCanvasKey({ target, draft }: UiCanvasRef): string {
+  return `canvas:${draft ? "draft" : "live"}:${target}`;
 }
 
 export function uiObserveKey(callId: string): string {
-  return `ui-observe-${callId}`;
+  return `observe:${callId}`;
 }
 
 function storedRev(value: unknown): number {
@@ -73,18 +78,18 @@ function nextCanvas(stored: unknown, patch: UiCanvasPatch | null): UiCanvas | { 
 export async function readUiCanvas(
   store: UiStateStore,
   principalId: string,
-  sessionId: string,
+  ref: UiCanvasRef,
 ): Promise<UiCanvas | null> {
-  return asCanvas((await store.get(uiStateId(principalId, uiCanvasKey(sessionId))))?.value);
+  return asCanvas((await store.get(uiStateId(principalId, uiCanvasKey(ref))))?.value);
 }
 
 export async function writeUiCanvas(
   store: UiStateStore,
   principalId: string,
-  sessionId: string,
+  ref: UiCanvasRef,
   patch: UiCanvasPatch | null,
 ): Promise<UiCanvas | null> {
-  const id = uiStateId(principalId, uiCanvasKey(sessionId));
+  const id = uiStateId(principalId, uiCanvasKey(ref));
   let written: unknown = null;
   const apply = (rec: PersistedUiState | null): PersistedUiState => {
     written = nextCanvas(rec?.value ?? null, patch);
@@ -101,9 +106,9 @@ export async function installSharedCanvas(
   file: { stream: Readable } | null,
 ): Promise<UiCanvas | string> {
   if (!file) return "no such file is shared with you";
+  const { data } = await collectBytes(file.stream, { maxBytes: UI_STATE_MAX_BYTES });
   let shared: Record<string, unknown>;
   try {
-    const { data } = await collectBytes(file.stream, { maxBytes: UI_STATE_MAX_BYTES });
     shared = JSON.parse(data.toString("utf8")) as Record<string, unknown>;
   } catch (error) {
     return `not a shared sidebar: ${errMessage(error)}`;
@@ -112,7 +117,7 @@ export async function installSharedCanvas(
   if (typeof html !== "string" || typeof css !== "string" || typeof js !== "string")
     return "not a shared sidebar: html, css and js must be strings";
   try {
-    return (await writeUiCanvas(store, principalId, ALWAYS_ON_CANVAS, { html, css, js, replace: true }))!;
+    return (await writeUiCanvas(store, principalId, { target: ALWAYS_ON_CANVAS }, { html, css, js, replace: true }))!;
   } catch (error) {
     if (error instanceof UiCanvasTooLargeError) return "the shared sidebar is too large";
     throw error;

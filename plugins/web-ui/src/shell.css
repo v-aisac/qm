@@ -12598,11 +12598,20 @@ body.app-edit-embed .custom-chat-shell.app-edit-chat > .chat-bottom-dock {
 .ui-canvas.collapsed .ui-canvas-body {
   display: none;
 }
-.ui-canvas-head {
-  position: absolute;
+.ui-canvas-dock {
+  position: fixed;
   right: 12px;
   bottom: 12px;
-  z-index: 1;
+  z-index: 1001;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+.ui-canvas-dock:empty {
+  display: none;
+}
+.ui-canvas-head {
   display: flex;
   align-items: center;
   gap: 2px;
@@ -12616,8 +12625,4 @@ body.app-edit-embed .custom-chat-shell.app-edit-chat > .chat-bottom-dock {
 .ui-canvas-title {
   font-weight: 600;
   margin-right: 4px;
-}
-.ui-canvas-head .icon-btn {
-  width: 24px;
-  height: 24px;
 }
