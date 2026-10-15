@@ -1,3 +1,4 @@
+import { nativeSlackConfigured, nativeSlackConnection } from "./slack-native.ts";
 import { parseSlackThreadRef } from "../../slack/message-gating.ts";
 import { isBackendCredential } from "../../credentials/keychain.ts";
 import { livePersonCapability } from "../artifact-share.ts";
@@ -485,10 +486,32 @@ export interface SlackAccountLink {
 }
 
 async function slackStatus(ctx: ApiCtx): Promise<void> {
-  const access = await credential(ctx);
-  if (!access) return;
+  ctx.res.setHeader("Cache-Control", "no-store");
   const installation = await ctx.deps.slackInstallation?.get();
   const workspaceInstalled = Boolean(installation?.botToken || ctx.deps.slackEnvBotToken);
+  let nativeOAuth = false;
+  if (ctx.actor && !ctx.actor.imp && !ctx.capability) {
+    try {
+      if (!(await activePrincipal(ctx.deps, ctx.actor.p))) return sendJson(ctx.res, 403, { error: "forbidden" });
+      const native = await nativeSlackConnection(ctx);
+      if (native)
+        return sendJson(ctx.res, 200, {
+          connected: true,
+          user: native.user,
+          workspace: native.workspace,
+          nativeOAuth: true,
+          workspaceInstalled,
+        });
+      nativeOAuth = await nativeSlackConfigured(ctx);
+      if (nativeOAuth && !(await hasSlackAccount(ctx)))
+        return sendJson(ctx.res, 200, { connected: false, nativeOAuth, workspaceInstalled });
+    } catch {
+      return sendJson(ctx.res, 502, { error: "slack_unavailable" });
+    }
+  }
+  const access = await credential(ctx);
+  if (!access) return;
+
   ctx.res.setHeader("Cache-Control", "no-store");
   let failed = false;
   for (const id of personIds(access.principal)) {
@@ -516,13 +539,22 @@ async function slackStatus(ctx: ApiCtx): Promise<void> {
   }
   return failed
     ? sendJson(ctx.res, 502, { error: "status_unavailable" })
-    : sendJson(ctx.res, 200, { connected: false, workspaceInstalled });
+    : sendJson(ctx.res, 200, { connected: false, workspaceInstalled, nativeOAuth });
+}
+
+async function hasSlackAccount(ctx: ApiCtx): Promise<boolean> {
+  for (const id of personIds(ctx.actor!.p)) {
+    const record = await ctx.deps.slackAccounts?.get(id);
+    if (record && samePerson(record.memberId, ctx.actor!.p)) return true;
+  }
+  return false;
 }
 
 async function slackReply(ctx: ApiCtx, send: boolean): Promise<void> {
   if (!ctx.actor || ctx.actor.imp || ctx.capability)
     return sendJson(ctx.res, 403, { error: "browser_identity_required" });
   ctx.res.setHeader("Cache-Control", "no-store");
+  if (!(await activePrincipal(ctx.deps, ctx.actor.p))) return sendJson(ctx.res, 403, { error: "forbidden" });
   const body = ctx.body as { sessionId?: unknown; text?: unknown; clientMessageId?: unknown } | null;
   if (typeof body?.sessionId !== "string") return sendJson(ctx.res, 400, { error: "invalid_session" });
   const source = await ctx.app.getSessionForViewer(body.sessionId, ctx.actor.p);
@@ -539,10 +571,44 @@ async function slackReply(ctx: ApiCtx, send: boolean): Promise<void> {
       !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(body.clientMessageId))
   )
     return sendJson(ctx.res, 400, { error: "invalid_message" });
-  const access = await credential(ctx);
-  if (!access) return;
   let attemptedSend = false;
   try {
+    const native = await nativeSlackConnection(ctx);
+    if (native) {
+      const conversation = await native.call("conversations.info", { channel: target.container });
+      if (!conversation.ok)
+        return sendJson(ctx.res, 403, {
+          error: "slack_access_denied",
+          message: "Your Slack account cannot access this conversation. Check its Slack permissions.",
+        });
+      if (!send) return sendJson(ctx.res, 200, { connected: true, user: native.user, workspace: native.workspace });
+      attemptedSend = true;
+      const result = await native.call("chat.postMessage", {
+        channel: target.container,
+        ...(target.root ? { thread_ts: target.root } : {}),
+        text: body.text,
+        client_msg_id: body.clientMessageId,
+        as_user: true,
+        unfurl_links: false,
+        unfurl_media: false,
+      });
+      if (!result.ok)
+        return sendJson(ctx.res, 403, {
+          error: "slack_send_failed",
+          message:
+            "Slack could not send your message. Check your account’s conversation access and permission to send messages.",
+        });
+      return sendJson(ctx.res, 200, { sent: true, ts: result.ts });
+    }
+    const hasComposioLink = await hasSlackAccount(ctx);
+    if (!hasComposioLink && (await nativeSlackConfigured(ctx)))
+      return sendJson(ctx.res, send ? 409 : 200, {
+        connected: false,
+        error: "slack_link_required",
+        message: "Link your personal Slack account to reply.",
+      });
+    const access = await credential(ctx);
+    if (!access) return;
     for (const id of personIds(access.principal)) {
       const record = await ctx.deps.slackAccounts?.get(id);
       if (!record || !samePerson(record.memberId, access.principal)) continue;

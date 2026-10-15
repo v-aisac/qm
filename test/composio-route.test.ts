@@ -968,3 +968,105 @@ test("Slack replies preserve unthreaded DMs and report Slack permission failures
   assert.equal(request.body.channel, "D123");
   assert.equal("thread_ts" in request.body, false);
 });
+
+async function nativeSlackFixture(linked = true) {
+  const f = await slackReplyFixture();
+  const { createDirectoryStore } = await import("../src/directory/directory-store.ts");
+  f.deps.slackAccounts = createMemoryMap();
+  f.deps.connectorTokens = f.deps.keychain;
+  f.deps.oauthEnv = { SLACK_OAUTH_CLIENT_ID: "native-client", SLACK_OAUTH_CLIENT_SECRET: "native-secret" };
+  f.deps.directory = createDirectoryStore();
+  await f.deps.directory.replace([{ principalId: "alice", slackId: "U123", displayName: "Alice", type: "internal" }]);
+  f.deps.slackEnvBotToken = "workspace-bot";
+  if (linked) await f.deps.connectorTokens!.setConnectorToken("slack.com", "alice", { accessToken: "alice-user" });
+  const nativeCalls: Array<{ url: string; init?: RequestInit }> = [];
+  const nativeReplies: unknown[] = [];
+  f.deps.slackInstallationFetch = async (input, init) => {
+    nativeCalls.push({ url: String(input), init });
+    if ((init?.headers as Record<string, string>).Authorization === "Bearer workspace-bot")
+      return Response.json({ ok: true, team_id: "T123" });
+    const value = nativeReplies.shift();
+    if (value instanceof Error) throw value;
+    return Response.json(value);
+  };
+  const nativeIdentity = { ok: true, user_id: "U123", team_id: "T123", user: "Alice", team: "Test" };
+  return { ...f, nativeCalls, nativeReplies, nativeIdentity };
+}
+
+test("native Slack replies use the authenticated user's token and server destination without Composio", async () => {
+  const f = await nativeSlackFixture();
+  f.nativeReplies.push(f.nativeIdentity, { ok: true }, { ok: true, ts: "123.789" });
+  const result = await f.invoke("/v1/composio/slack/reply", { ...f.message, channel: "COTHER" });
+  assert.equal(result.data.sent, true);
+  assert.equal(f.calls.length, 0);
+  const sent = f.nativeCalls.at(-1)!;
+  assert.equal(sent.url, "https://slack.com/api/chat.postMessage");
+  assert.equal((sent.init!.headers as Record<string, string>).Authorization, "Bearer alice-user");
+  assert.deepEqual(JSON.parse(String(sent.init!.body)), {
+    channel: "C123",
+    thread_ts: "123.456",
+    text: "Hello",
+    client_msg_id: f.message.clientMessageId,
+    as_user: true,
+    unfurl_links: false,
+    unfurl_media: false,
+  });
+});
+
+test("native Slack rejects bot, wrong person, and wrong workspace tokens", async () => {
+  for (const invalid of [{ bot_id: "B123" }, { user_id: "UOTHER" }, { team_id: "TOTHER" }]) {
+    const f = await nativeSlackFixture();
+    f.nativeReplies.push({ ...f.nativeIdentity, ...invalid });
+    const result = await f.invoke("/v1/composio/slack/reply", f.message);
+    assert.equal(result.status, 409);
+    assert.equal(
+      f.nativeCalls.some((c) => c.url.includes("chat.postMessage")),
+      false,
+    );
+  }
+});
+
+test("native Slack connection status and linking work without a Composio credential", async () => {
+  const f = await nativeSlackFixture(false);
+  f.deps.keychain = undefined;
+  f.deps.serviceCreds = undefined;
+  assert.deepEqual((await f.invoke("/v1/composio/slack")).data, {
+    connected: false,
+    nativeOAuth: true,
+    workspaceInstalled: true,
+  });
+  assert.equal((await f.invoke("/v1/composio/slack/reply-status", { sessionId: "session" })).data.connected, false);
+  await f.deps.connectorTokens!.setConnectorToken("slack.com", "alice", { accessToken: "alice-user" });
+  f.nativeReplies.push(f.nativeIdentity);
+  assert.equal((await f.invoke("/v1/composio/slack")).data.connected, true);
+});
+
+test("configured native OAuth preserves an existing Composio connection", async () => {
+  const f = await nativeSlackFixture(false);
+  await f.deps.slackAccounts!.put("alice", {
+    principalId: "alice",
+    memberId: "alice",
+    accountId: "ca_alice",
+    userId: "U123",
+    teamId: "T123",
+    user: "Alice",
+    workspace: "Test",
+  });
+  f.replies.push(f.account);
+  assert.equal((await f.invoke("/v1/composio/slack")).data.connected, true);
+  f.replies.push(f.account, f.identity, { data: { ok: true } }, { data: { ok: true, ts: "123.789" } });
+  assert.equal((await f.invoke("/v1/composio/slack/reply", f.message)).data.sent, true);
+  assert.equal(f.nativeCalls.length, 0);
+});
+
+test("native Slack access denial and uncertain sends never fall through to another transport", async () => {
+  for (const sending of [false, true]) {
+    const f = await nativeSlackFixture();
+    f.nativeReplies.push(f.nativeIdentity, { ok: sending });
+    if (sending) f.nativeReplies.push(new Error("timeout"));
+    const result = await f.invoke("/v1/composio/slack/reply", f.message);
+    assert.equal(result.status, sending ? 502 : 403);
+    if (sending) assert.match(result.data.message, /outcome is unknown/);
+    assert.equal(f.calls.length, 0);
+  }
+});

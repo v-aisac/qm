@@ -34,6 +34,7 @@ export class SlackAccount extends LitElement {
   private error = "";
   private connected = false;
   private label = "";
+  private nativeOAuth = false;
   private attempt: SlackAttempt | null = null;
 
   protected createRenderRoot(): HTMLElement {
@@ -97,6 +98,7 @@ export class SlackAccount extends LitElement {
       });
       if (!response.ok) return;
       const result = await response.json();
+      this.nativeOAuth = result.nativeOAuth === true;
       this.connected = result.connected === true;
       this.label = [result.user, result.workspace].filter(Boolean).join(" · ");
     } catch {
@@ -110,6 +112,27 @@ export class SlackAccount extends LitElement {
     this.error = "";
     try {
       if (await openDesktopBrowser(withBase("/settings"))) return;
+      await this.status();
+      if (this.nativeOAuth) {
+        const response = await fetch(withBase("/api/connectors/slack/start"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ returnTo: `${location.pathname}${location.search}` }),
+          signal: AbortSignal.timeout(30_000),
+        });
+        const result = await response.json();
+        if (!response.ok) throw Error(result.message ?? "Could not start Slack authorization.");
+        const url = new URL(result.authorizeUrl);
+        if (
+          url.origin !== "https://slack.com" ||
+          url.pathname !== "/oauth/v2/authorize" ||
+          url.username ||
+          url.password
+        )
+          throw Error("Could not verify the Slack authorization link.");
+        location.assign(url.href);
+        return;
+      }
       const state = crypto.randomUUID();
       const response = await fetch(withBase("/api/composio/slack/authorize"), {
         method: "POST",
