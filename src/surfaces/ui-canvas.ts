@@ -111,7 +111,12 @@ export async function installSharedCanvas(
   if (typeof html !== "string" || typeof css !== "string" || typeof js !== "string")
     return "not a shared canvas: html, css and js must be strings";
   try {
-    return (await writeUiCanvas(store, principalId, { target: ALWAYS_ON_CANVAS }, { html, css, js, replace: true }))!;
+    return (await writeUiCanvas(
+      store,
+      principalId,
+      { target: ALWAYS_ON_CANVAS },
+      { html, css, js, pinned: true, replace: true },
+    ))!;
   } catch (error) {
     if (error instanceof UiCanvasTooLargeError) return "the shared canvas is too large";
     throw error;

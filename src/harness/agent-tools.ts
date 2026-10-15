@@ -4547,7 +4547,11 @@ function withToolApprovalGate(
           kind: "approval",
           approvalKey: `tool:${approvalIdentity}`,
           ...(GATED_TOOL_APPROVALS[approvalIdentity] ? { grantModes: { session: false, always: false } } : {}),
-          ...(params === undefined ? {} : { summary: redactCommand(redactSecrets(JSON.stringify(params))) }),
+          ...(GATED_TOOL_APPROVALS[approvalIdentity] && isObj(params) && typeof params.id === "string"
+            ? { summary: `file ${params.id}` }
+            : params === undefined
+              ? {}
+              : { summary: redactCommand(redactSecrets(JSON.stringify(params))) }),
           ...(isObj(params) && typeof params.purpose === "string" ? { purpose: params.purpose } : {}),
         });
         ref.pausedOnApproval = true;

@@ -138,7 +138,7 @@ describe("ui canvas and ui observe", () => {
     assert.match(String(await installSharedCanvas(built.uiState, "U2", file('{"js":1}'))), /must be strings/);
     await installSharedCanvas(built.uiState, "U2", file('{"html":"<nav/>","js":"1"}'));
     const live = await readUiCanvas(built.uiState, "U2", { target: "always-on" });
-    assert.deepEqual([live?.html, live?.css, live?.js], ["<nav/>", "", "1"]);
+    assert.deepEqual([live?.html, live?.css, live?.js, live?.pinned], ["<nav/>", "", "1", true]);
   });
 
   it("rejects bad and oversized writes", async () => {

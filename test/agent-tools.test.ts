@@ -4474,6 +4474,7 @@ test("installing a shared sidebar always waits for the person's approval", async
   await call(files, { action: "install_canvas", id: "f1" });
   assert.deepEqual(installed, []);
   const card = ref.pendingApprovals?.[0];
+  assert.equal(card?.summary, "file f1");
   assert.deepEqual(
     [card?.approvalKey, card?.reason, card?.grantModes],
     ["tool:files:install_canvas", GATED_TOOL_APPROVALS["files:install_canvas"], { session: false, always: false }],
