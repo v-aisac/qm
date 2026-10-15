@@ -4503,8 +4503,14 @@ function withRetrySafety(tool: ToolDefinition, marks: Map<string, RetryMark>): T
 }
 
 const TOOL_APPROVAL_EXEMPT = new Set(["finish_silently"]);
-export const GATED_TOOL_APPROVALS: Record<string, string> = {
-  "files:install_canvas": "install an always-on canvas someone shared with you; its code runs in your QM web UI",
+export const GATED_TOOL_APPROVALS: Record<
+  string,
+  { reason: string; summary: (params: Record<string, unknown>) => string }
+> = {
+  "files:install_canvas": {
+    reason: "install an always-on canvas someone shared with you; its code runs in your QM web UI",
+    summary: (params) => `file ${String(params.id)}`,
+  },
 };
 const STRICT_TOOL_APPROVAL_REASON = "strict posture: this tool call requires human approval";
 
@@ -4540,15 +4546,16 @@ function withToolApprovalGate(
         : tool.name;
       const commandLabel = resourceAction ? `${tool.name} ${resourceAction}` : tool.name;
       if (gate && !gate(approvalIdentity)) {
-        const reason = GATED_TOOL_APPROVALS[approvalIdentity] ?? STRICT_TOOL_APPROVAL_REASON;
+        const gated = GATED_TOOL_APPROVALS[approvalIdentity];
+        const reason = gated?.reason ?? STRICT_TOOL_APPROVAL_REASON;
         ref.pendingApprovals?.push({
           command: commandLabel,
           reason,
           kind: "approval",
           approvalKey: `tool:${approvalIdentity}`,
-          ...(GATED_TOOL_APPROVALS[approvalIdentity] ? { grantModes: { session: false, always: false } } : {}),
-          ...(GATED_TOOL_APPROVALS[approvalIdentity] && isObj(params) && typeof params.id === "string"
-            ? { summary: `file ${params.id}` }
+          ...(gated ? { grantModes: { session: false, always: false } } : {}),
+          ...(gated && isObj(params)
+            ? { summary: gated.summary(params) }
             : params === undefined
               ? {}
               : { summary: redactCommand(redactSecrets(JSON.stringify(params))) }),

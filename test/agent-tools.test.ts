@@ -4477,7 +4477,11 @@ test("installing a shared sidebar always waits for the person's approval", async
   assert.equal(card?.summary, "file f1");
   assert.deepEqual(
     [card?.approvalKey, card?.reason, card?.grantModes],
-    ["tool:files:install_canvas", GATED_TOOL_APPROVALS["files:install_canvas"], { session: false, always: false }],
+    [
+      "tool:files:install_canvas",
+      GATED_TOOL_APPROVALS["files:install_canvas"]!.reason,
+      { session: false, always: false },
+    ],
   );
   approved = true;
   ref.pausedOnApproval = false;

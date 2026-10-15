@@ -86,7 +86,7 @@ script must not assume a particular session is open.
 
 Only when the person asks to share their always-on canvas with someone:
 
-1. Save it: `GET /v1/ui/canvas?alwaysOn=true`, write `{"html","css","js"}` from the response to `canvas.json`, upload it with Files, and share that file with each recipient.
+1. Save it: `GET /v1/ui/canvas?alwaysOn=true`, write `{"html","css","js","pinned"}` from the response to `canvas.json`, upload it with Files, and share that file with each recipient.
 2. Tell each recipient with `POST /v1/reach` (`recipient`): who shared it, what it does, and that they can ask QM to install it. Include the file ID.
 
 When someone asks to install one, use files action `install_canvas` with the file ID. It asks them to approve, then replaces their always-on canvas with that copy. It is a snapshot: to update it, share again. They remove it by closing the canvas.

@@ -115,7 +115,7 @@ export async function installSharedCanvas(
       store,
       principalId,
       { target: ALWAYS_ON_CANVAS },
-      { html, css, js, pinned: true, replace: true },
+      { html, css, js, pinned: shared.pinned !== false, replace: true },
     ))!;
   } catch (error) {
     if (error instanceof UiCanvasTooLargeError) return "the shared canvas is too large";
