@@ -68,7 +68,7 @@ For any write that restyles or edits the page outside the canvas, or any large r
 
 1. Save the current version first: `GET /v1/ui/canvas` (plus `?alwaysOn=true` if needed) and keep the response.
 2. Write the new version.
-3. Look at it: `POST /v1/ui/observe` with `{"screenshot": true}`. Read the screenshot and `snapshot.canvasErrors`: errors and rejected promises from canvas code, each prefixed with its canvas revision (`rev N: ...`).
+3. Look at it: `POST /v1/ui/observe` with `{"screenshot": true}`. Read the screenshot and `snapshot.canvasErrors`: errors and rejected promises from canvas code, each prefixed with the canvas and revision it came from (`canvas <id> rev N line L: ...`). Rejections are caught only when their stack points at canvas code.
 4. If it looks wrong or `canvasErrors` has entries for the new revision, write the saved version back right away (or `DELETE` if there was none), then fix and try again. If you can't restore it, dismiss it.
 
 ## Always on

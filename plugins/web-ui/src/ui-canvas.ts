@@ -71,15 +71,17 @@ const OBSERVE_WINDOW_MS = 30_000;
 const MAX_CANVAS_ERRORS = 20;
 const canvasErrors: string[] = [];
 
-function recordCanvasError(message: string, source: string): void {
-  const at = /\/api\/ui-canvas\/[^/]+\/script\.js\?rev=(\d+)(?::(\d+))?/.exec(source);
-  if (!at) return;
-  canvasErrors.push(`rev ${at[1]}: ${message}`);
+const canvasScripts = new Map<string, string>();
+
+function recordCanvasError(message: string, source: string, line?: number): void {
+  const src = [...canvasScripts.keys()].find((key) => source.includes(key));
+  if (!src) return;
+  canvasErrors.push(`${canvasScripts.get(src)}${line ? ` line ${line}` : ""}: ${message}`);
   canvasErrors.splice(0, canvasErrors.length - MAX_CANVAS_ERRORS);
 }
 
 if (typeof addEventListener === "function") {
-  addEventListener("error", (e) => recordCanvasError(e.message, e.filename ?? ""));
+  addEventListener("error", (e) => recordCanvasError(e.message, e.filename ?? "", e.lineno));
   addEventListener("unhandledrejection", (e) =>
     recordCanvasError(errMessage(e.reason), e.reason instanceof Error ? (e.reason.stack ?? "") : ""),
   );
@@ -256,6 +258,7 @@ function runScript(panel: Panel, canvas: CanvasRecord): void {
     reportHandledError("ui_canvas_script", new Error(`canvas script failed to load (rev ${canvas.rev})`));
     load(panel.sessionId);
   };
+  canvasScripts.set(script.src, `canvas ${panel.sessionId} rev ${canvas.rev}`);
   panel.script = script;
   panel.el.append(script);
 }
