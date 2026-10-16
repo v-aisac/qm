@@ -1,3 +1,4 @@
+import { createDeliveryStore } from "../src/delivery/delivery-store.ts";
 import type { CapabilityClaims } from "../src/auth/capability-token.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -25,6 +26,7 @@ function fixture() {
   const replies: unknown[] = [];
   const deps: Partial<ServerDeps> = {
     keychain,
+    deliveries: createDeliveryStore(),
     serviceCreds: keychain,
     acl,
     composioReturns: createMemoryMap(),
@@ -884,6 +886,15 @@ test("Slack replies use only the viewer's verified user connection and server-si
   });
   assert.equal(result.status, 200);
   assert.equal(result.data.sent, true);
+  const receipts = await f.deps.deliveries!.pending("web");
+  assert.equal(receipts.length, 1);
+  assert.equal(receipts[0]!.text, "Hello");
+  assert.deepEqual(receipts[0]!.destination.webTranscript, {
+    kind: "slack_reply",
+    sessionId: "session",
+    ts: "123.789",
+    name: "Alice",
+  });
   const request = JSON.parse(String(f.calls.at(-1)!.init!.body));
   assert.equal(request.connected_account_id, "ca_alice");
   assert.equal(request.endpoint, "https://slack.com/api/chat.postMessage");
@@ -998,6 +1009,15 @@ test("native Slack replies use the authenticated user's token and server destina
   f.nativeReplies.push(f.nativeIdentity, { ok: true }, { ok: true, ts: "123.789" });
   const result = await f.invoke("/v1/composio/slack/reply", { ...f.message, channel: "COTHER" });
   assert.equal(result.data.sent, true);
+  const receipts = await f.deps.deliveries!.pending("web");
+  assert.equal(receipts.length, 1);
+  assert.equal(receipts[0]!.text, "Hello");
+  assert.deepEqual(receipts[0]!.destination.webTranscript, {
+    kind: "slack_reply",
+    sessionId: "session",
+    ts: "123.789",
+    name: "Alice",
+  });
   assert.equal(f.calls.length, 0);
   const sent = f.nativeCalls.at(-1)!;
   assert.equal(sent.url, "https://slack.com/api/chat.postMessage");
@@ -1069,4 +1089,16 @@ test("native Slack access denial and uncertain sends never fall through to anoth
     if (sending) assert.match(result.data.message, /outcome is unknown/);
     assert.equal(f.calls.length, 0);
   }
+});
+
+test("a confirmed Slack send is distinguished from a failed transcript write", async () => {
+  const f = await slackReplyFixture();
+  f.deps.deliveries!.enqueue = async () => {
+    throw new Error("database unavailable");
+  };
+  f.replies.push(f.account, f.identity, { data: { ok: true } }, { data: { ok: true, ts: "123.789" } });
+  const result = await f.invoke("/v1/composio/slack/reply", f.message);
+  assert.equal(result.status, 502);
+  assert.equal(result.data.error, "transcript_unavailable");
+  assert.match(result.data.message, /Slack sent your message.*Do not resend/);
 });

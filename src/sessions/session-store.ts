@@ -579,7 +579,16 @@ export function userMessagePreview(payload: unknown, maxLen = 160): string {
 }
 
 export function transcriptEntries(entries: readonly SessionEntry[]): SessionEntry[] {
-  return entries.filter((e) => e.type !== "soul");
+  const received = new Set(
+    entries.flatMap((entry) => {
+      const payload = entry.payload as { ts?: string; slackReplyReceipt?: boolean } | null;
+      return entry.type === "user" && payload?.ts && !payload.slackReplyReceipt ? [payload.ts] : [];
+    }),
+  );
+  return entries.filter((entry) => {
+    const payload = entry.payload as { ts?: string; slackReplyReceipt?: boolean } | null;
+    return entry.type !== "soul" && !(payload?.slackReplyReceipt && payload.ts && received.has(payload.ts));
+  });
 }
 
 export const ENTRY_STRING_BUDGET = 2_000;

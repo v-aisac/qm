@@ -14,7 +14,7 @@ const RECORDED_CACHE_CAP = 1000;
 const WRITE_GIVEUP_MS = 10 * 60_000;
 
 type WebTranscriptSessions = TranscriptAppendSessions &
-  Pick<SessionStore, "getByThread" | "acquireLease" | "releaseLease" | "getEntries">;
+  Pick<SessionStore, "get" | "getByThread" | "acquireLease" | "releaseLease" | "getEntries">;
 
 export function turnRecordedFailure(
   tail: readonly SessionEntry[],
@@ -55,30 +55,47 @@ export function withWebTranscriptDeliveries(store: DeliveryStore, sessions: WebT
       const tail = await sessions.getEntries(session.id, { limit: DEDUPE_SCAN_LIMIT });
       if (tail.some((entry) => entryDeliveryKey(entry) === d.idempotencyKey)) return true;
       const note = d.destination.webTranscript;
+      const reply = note?.kind === "slack_reply" ? note : undefined;
+      if (reply && tail.some((entry) => entry.type === "user" && (entry.payload as { ts?: string })?.ts === reply.ts))
+        return true;
       const failure = note?.kind === "turn_failure" ? note : undefined;
       if (failure && turnRecordedFailure(tail, failure)) return true;
       const scopeLabel = session.scopeId;
       const ownReply = d.provenance?.sourceThreadRef === d.destination.target;
       const via = d.provenance?.trigger && !ownReply ? d.provenance.trigger : undefined;
-      const entry = failure
-        ? {
-            type: "system" as const,
-            payload: {
-              kind: "turn_failure",
-              message: d.text,
-              deliveryKey: d.idempotencyKey,
-              ...(failure.runId ? { runId: failure.runId } : {}),
-            },
-          }
-        : {
-            type: "assistant" as const,
-            payload: { text: d.text, deliveryKey: d.idempotencyKey, ...(via ? { via } : {}) },
-          };
+      let entry: Pick<SessionEntry, "type" | "payload">;
+      if (reply) {
+        entry = {
+          type: "user",
+          payload: {
+            text: d.text,
+            name: reply.name,
+            ts: reply.ts,
+            slackReplyReceipt: true,
+            deliveryKey: d.idempotencyKey,
+          },
+        };
+      } else if (failure) {
+        entry = {
+          type: "system",
+          payload: {
+            kind: "turn_failure",
+            message: d.text,
+            deliveryKey: d.idempotencyKey,
+            ...(failure.runId ? { runId: failure.runId } : {}),
+          },
+        };
+      } else {
+        entry = {
+          type: "assistant",
+          payload: { text: d.text, deliveryKey: d.idempotencyKey, ...(via ? { via } : {}) },
+        };
+      }
       await appendEntryOutsideTurn(
         sessions,
         lease,
         { ...entry, scopeLabel },
-        failure
+        failure || reply
           ? undefined
           : (appended) =>
               messageTag(
@@ -101,7 +118,11 @@ export function withWebTranscriptDeliveries(store: DeliveryStore, sessions: WebT
       remember(d.idempotencyKey);
       return true;
     }
-    const session = await sessions.getByThread(d.destination.target);
+    const note = d.destination.webTranscript;
+    const session =
+      note?.kind === "slack_reply"
+        ? await sessions.get(note.sessionId)
+        : await sessions.getByThread(d.destination.target);
     if (!session) {
       console.error(
         `[delivery] web delivery ${d.idempotencyKey} targets ${d.destination.target}, which has no session — delivering as a nudge only`,
@@ -145,6 +166,17 @@ export function withWebTranscriptDeliveries(store: DeliveryStore, sessions: WebT
 
   return {
     ...store,
+    async enqueue(input) {
+      const delivery = await store.enqueue(input);
+      if (delivery.destination.webTranscript?.kind === "slack_reply") {
+        try {
+          await recordedForDelivery(delivery);
+        } catch (error) {
+          swallow("slack reply transcript write (will retry)", error);
+        }
+      }
+      return delivery;
+    },
     async pending(type) {
       const rows = await store.pending(type);
       return type === "web" ? drained(rows) : rows;

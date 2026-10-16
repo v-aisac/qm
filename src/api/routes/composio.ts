@@ -571,6 +571,27 @@ async function slackReply(ctx: ApiCtx, send: boolean): Promise<void> {
       !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(body.clientMessageId))
   )
     return sendJson(ctx.res, 400, { error: "invalid_message" });
+  if (send && !ctx.deps.deliveries)
+    return sendJson(ctx.res, 503, {
+      error: "slack_unavailable",
+      message: "Slack replies are temporarily unavailable.",
+    });
+  let slackConfirmed = false;
+  const recordReply = async (ts: unknown, name: string) => {
+    slackConfirmed = true;
+    if (typeof ts !== "string" || !/^\d+\.\d+$/.test(ts)) throw new Error("Slack response missing timestamp");
+    await ctx.deps.deliveries!.enqueue({
+      destination: {
+        type: "web",
+        target: source.session.threadRef,
+        audienceScopeId: source.session.scopeId,
+        webTranscript: { kind: "slack_reply", sessionId: body.sessionId as string, ts, name },
+      },
+      text: body.text as string,
+      idempotencyKey: `slack-reply:${body.sessionId}:${target.container}:${ts}`,
+    });
+    return sendJson(ctx.res, 200, { sent: true, ts });
+  };
   let attemptedSend = false;
   try {
     const native = await nativeSlackConnection(ctx);
@@ -598,7 +619,7 @@ async function slackReply(ctx: ApiCtx, send: boolean): Promise<void> {
           message:
             "Slack could not send your message. Check your account’s conversation access and permission to send messages.",
         });
-      return sendJson(ctx.res, 200, { sent: true, ts: result.ts });
+      return await recordReply(result.ts, native.user ?? ctx.actor.p);
     }
     const hasComposioLink = await hasSlackAccount(ctx);
     if (!hasComposioLink && (await nativeSlackConfigured(ctx)))
@@ -673,7 +694,7 @@ async function slackReply(ctx: ApiCtx, send: boolean): Promise<void> {
           message:
             "Slack could not send your message. Check your account’s conversation access and permission to send messages.",
         });
-      return sendJson(ctx.res, 200, { sent: true, ts: result.ts });
+      return await recordReply(result.ts, record.user);
     }
     return sendJson(ctx.res, send ? 409 : 200, {
       connected: false,
@@ -681,6 +702,11 @@ async function slackReply(ctx: ApiCtx, send: boolean): Promise<void> {
       message: "Link your personal Slack account to reply.",
     });
   } catch {
+    if (slackConfirmed)
+      return sendJson(ctx.res, 502, {
+        error: "transcript_unavailable",
+        message: "Slack sent your message, but its transcript update could not be saved. Do not resend it.",
+      });
     return sendJson(ctx.res, 502, {
       error: "slack_unavailable",
       message: attemptedSend

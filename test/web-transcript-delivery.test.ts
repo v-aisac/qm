@@ -1,3 +1,4 @@
+import { appendEntryOutsideTurn, transcriptEntries } from "../src/sessions/session-store.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createMemorySessionStore } from "../src/sessions/memory-session-store.ts";
@@ -438,4 +439,55 @@ test("a recovered reply the turn never recorded is written into the transcript, 
   const modelRow = (await sessions.getTape(session.id)).find((row) => row.kind === "message");
   const content = (modelRow!.payload as { content: Array<{ text: string }> }).content[0]!.text;
   assert.doesNotMatch(content, /via=/, "the turn's own reply carries no delivery badge");
+});
+
+test("Slack send receipts survive a restart, retry a busy session, and collapse against the Slack event", async () => {
+  const { sessions, inner, deliveries } = wired();
+  const session = await webSession(sessions, "dm:D123");
+  const { lease } = await sessions.acquireLease(session.id, "turn");
+  assert.ok(lease);
+  const input = {
+    destination: {
+      ...webDestination("dm:D123"),
+      webTranscript: { kind: "slack_reply" as const, sessionId: session.id, ts: "123.789", name: "Alice" },
+    },
+    text: "Sent as Alice",
+    idempotencyKey: "slack-reply:session:D123:123.789",
+  };
+  await deliveries.enqueue(input);
+  assert.equal((await sessions.getEntries(session.id)).length, 0);
+  assert.equal((await inner.pending("web")).length, 1);
+  await sessions.releaseLease(lease);
+  const restarted = withWebTranscriptDeliveries(inner, sessions);
+  assert.equal((await restarted.pending("web")).length, 1);
+  await restarted.enqueue(input);
+  const entries = (await createTranscriptSource(sessions).forRender(session.id)).entries;
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]!.type, "user");
+  assert.equal((entries[0]!.payload as { text: string }).text, input.text);
+  assert.equal((await sessions.getTape(session.id)).filter((row) => row.kind === "message").length, 0);
+  const eventLease = await sessions.acquireLease(session.id, "turn");
+  assert.ok(eventLease.lease);
+  await appendEntryOutsideTurn(sessions, eventLease.lease, {
+    type: "user",
+    scopeLabel: SCOPE,
+    payload: { text: input.text, name: "Alice", ts: "123.789" },
+  });
+  await sessions.releaseLease(eventLease.lease);
+  const visible = transcriptEntries((await createTranscriptSource(sessions).forRender(session.id)).entries);
+  assert.equal(visible.length, 1);
+  assert.equal((visible[0]!.payload as { slackReplyReceipt?: boolean }).slackReplyReceipt, undefined);
+});
+
+test("Slack send receipts are recorded immediately without a listener and skip an already recorded event", async () => {
+  const { sessions, deliveries } = wired();
+  const session = await webSession(sessions, "dm:D123");
+  const destination: Destination = {
+    ...webDestination("dm:D123"),
+    webTranscript: { kind: "slack_reply", sessionId: session.id, ts: "123.789", name: "Alice" },
+  };
+  await deliveries.enqueue({ destination, text: "Hello", idempotencyKey: "send-1" });
+  assert.equal((await sessions.getEntries(session.id)).length, 1);
+  await deliveries.enqueue({ destination, text: "Hello", idempotencyKey: "send-2" });
+  assert.equal((await sessions.getEntries(session.id)).length, 1);
 });
