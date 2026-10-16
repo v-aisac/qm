@@ -1,4 +1,5 @@
 import { adminOperations } from "../tools/admin.ts";
+import { handbackStop } from "../runs/run-store.ts";
 import { MAX_OUTBOUND_FILES, type OutboundFile } from "../core/attachments.ts";
 import { MaskedExecutionError } from "../security/secret-masking.ts";
 import type { DocumentInput } from "../core/document-inputs.ts";
@@ -388,7 +389,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
       sourceScopeId,
     });
     if (type === "tool_result" && isObj(payload)) {
-      if (ref.shutdown?.aborted) payload = { ...payload, interrupted: true, stop: { kind: "shutdown" } };
+      if (ref.shutdown?.aborted) payload = { ...payload, interrupted: true, stop: handbackStop(ref.shutdown) };
       else if (ref.abortSignal?.aborted) payload = { ...payload, stopped: true };
     }
     await ref.emit({ type, payload, scopeLabel });
@@ -2938,7 +2939,9 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
       "context it is shared by ALL of that person's sessions, not tied to the session that " +
       "wrote it. Never store session pins or 'for this session' notes here: ALL pinning goes " +
       "through the pins self-API (POST /v1/pins), which routes by context — the session's own " +
-      "pins in the web UI, native pinning in Slack. `edit` swaps one exact passage `old` for `new` " +
+      "pins in the web UI, native pinning in Slack. To keep a skill in this scope's per-turn skills shortlist, " +
+      'pin it instead of writing guidance: PUT $AGENT_API_URL/v1/pinned-skills with header "x-agent-capability: $AGENT_API_TOKEN" ' +
+      'and body {"names": [...]}, the full list. `edit` swaps one exact passage `old` for `new` ' +
       "and fails unless `old` appears exactly once in that scope's guidance; prefer it for small changes. " +
       "`replace` REPLACES that scope's entire guidance with `content` — include everything that " +
       "should remain. Org-wide policy is always layered above and " +
