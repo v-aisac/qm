@@ -1,3 +1,4 @@
+import { findRoute } from "./routes/route.ts";
 import type { CapabilityClaims } from "../auth/capability-token.ts";
 import { livePersonCapability } from "./artifact-share.ts";
 
@@ -14,7 +15,7 @@ interface AgentApiView {
 }
 
 interface AgentApiFamily {
-  match: (method: string, pathname: string) => boolean;
+  match?: (method: string, pathname: string) => boolean;
   when?: (view: AgentApiView) => boolean;
   guidance?: string;
   routes: AgentApiRoute[];
@@ -536,11 +537,6 @@ const FAMILIES: AgentApiFamily[] = [
     ],
   },
   {
-    match: (m, p) =>
-      (p === "/v1/webhooks" && (m === "POST" || m === "GET")) ||
-      ((m === "PATCH" || m === "DELETE") && /^\/v1\/webhooks\/[^/]+$/.test(p)) ||
-      (m === "GET" && /^\/v1\/webhooks\/[^/]+\/runs$/.test(p)) ||
-      (m === "POST" && /^\/v1\/webhooks\/[^/]+\/(disable|enable)$/.test(p)),
     when: () => false,
     routes: [
       {
@@ -919,7 +915,7 @@ const WHOAMI_FOR_ALL: AgentApiFamily = {
 };
 
 export function agentApiMatches(method: string, pathname: string): boolean {
-  return FAMILIES.some((f) => f.match(method, pathname));
+  return FAMILIES.some((f) => (f.match ? f.match(method, pathname) : findRoute(f.routes, method, pathname) !== null));
 }
 
 export interface AgentApiListing {

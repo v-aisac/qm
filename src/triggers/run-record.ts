@@ -1,5 +1,5 @@
 import type { AutomationRun } from "../types.ts";
-import { errMessage } from "../util/errors.ts";
+import { errMessage, reportFailure } from "../util/errors.ts";
 import { runTrigger, type TriggerDeps, type TriggerSpec, type TriggerOutcome } from "./run-trigger.ts";
 
 export const RUN_DETAIL_MAX_CHARS = 2000;
@@ -43,6 +43,7 @@ export async function runRecordedTrigger(
       },
     });
   } catch (error) {
+    reportFailure("automation execution", error, `fire=${history.entry.fireKey}`);
     await history.record({
       ...history.entry,
       endedAt: history.now(),

@@ -20,6 +20,7 @@ export interface AutomationRunStore {
   backfill(cronId: string, entries: readonly AutomationRun[]): Promise<void>;
   listByCron(cronId: string, opts?: { limit?: number }): Promise<{ runs: AutomationRun[]; total: number }>;
   listByThreadRefs(threadRefs: readonly string[]): Promise<AutomationRunRecord[]>;
+  latest(cronId: string): Promise<AutomationRun | undefined>;
   latestForThread(cronId: string, threadRef: string): Promise<AutomationRun | undefined>;
 }
 
@@ -111,6 +112,13 @@ export function createMemoryAutomationRunStore(): AutomationRunStore {
         }
       }
       return records.sort(fireOrder);
+    },
+    async latest(cronId) {
+      let latest: AutomationRun | undefined;
+      for (const entry of byCron.get(cronId)?.values() ?? []) {
+        if (!latest || fireOrder(entry, latest) > 0) latest = entry;
+      }
+      return latest ? { ...latest } : undefined;
     },
     async latestForThread(cronId, threadRef) {
       const matches = [...(byCron.get(cronId)?.values() ?? [])].filter((e) => e.threadRef === threadRef);
@@ -389,6 +397,13 @@ export function createPostgresAutomationRunStore(connectionString: string): Auto
         [[...threadRefs]],
       );
       return rows.map((r) => ({ ...rowToEntry(r), cronId: r.cron_id as string }));
+    },
+    async latest(cronId) {
+      const rows = await q(
+        `SELECT ${FIRE_COLUMNS} FROM cron_fires WHERE cron_id = $1 ORDER BY fired_at DESC, fire_key DESC LIMIT 1`,
+        [cronId],
+      );
+      return rows.length ? rowToEntry(rows[0]!) : undefined;
     },
     async latestForThread(cronId, threadRef) {
       const rows = await q(

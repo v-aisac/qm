@@ -1,148 +1,20 @@
+import { activeRun, composioUserId, composioUserIds, credential, request } from "./composio-client.ts";
+import { hasSlackAccount } from "./slack-composio.ts";
+import { slackReply } from "./slack-reply.ts";
+export { composioUserId } from "./composio-client.ts";
 import { nativeSlackConfigured, nativeSlackConnection } from "./slack-native.ts";
-import { parseSlackThreadRef } from "../../slack/message-gating.ts";
-import { isBackendCredential } from "../../credentials/keychain.ts";
 import { livePersonCapability } from "../artifact-share.ts";
 import { mintSignedPayload, verifySignedPayload } from "../../auth/signed-token.ts";
 import { canonicalPerson, personIds, samePerson } from "../../directory/person.ts";
 import { PrincipalLinkError } from "../../identity/principal-links.ts";
-import { createHash } from "node:crypto";
 import { scopeId } from "../../types.ts";
-import { parseRef } from "../../acl/resource-ref.ts";
 import { orgId } from "../../config.ts";
-import { principalEntitledToScope } from "../../resolution/context-filter.ts";
 import { sendJson } from "../http.ts";
 import { redactSecrets } from "../../harness/redact-secrets.ts";
 import { createExactSecretValueMasker } from "../../security/secret-masking.ts";
-import { errMessage, httpFailure, reportFailure } from "../../util/errors.ts";
+import { errMessage, reportFailure } from "../../util/errors.ts";
 import { activePrincipal, audit } from "./shared.ts";
 import type { ApiCtx, Route } from "./route.ts";
-
-export function composioUserId(org: string, principal: string): string {
-  return `qm_${createHash("sha256")
-    .update(JSON.stringify([org, principal]))
-    .digest("hex")}`;
-}
-
-function composioUserIds(principal: string): string[] {
-  return [...new Set(personIds(principal).map((id) => composioUserId(orgId(), id)))];
-}
-
-async function activeRun(ctx: ApiCtx): Promise<boolean> {
-  const cap = ctx.capability;
-  if (!cap) return true;
-  const run = cap.runId ? await ctx.deps.runs?.get(cap.runId) : null;
-  if (
-    !run ||
-    run.status !== "running" ||
-    !cap.runLeaseToken ||
-    run.leaseToken !== cap.runLeaseToken ||
-    run.attempts !== cap.runAttempt ||
-    run.sessionId !== cap.threadRef ||
-    !samePerson(run.request.actor.id, cap.actorId) ||
-    (run.leaseExpiresAt ?? 0) <= Date.now()
-  ) {
-    sendJson(ctx.res, 403, {
-      error: "inactive_run",
-      message: "Connected app access requires this run's current capability.",
-    });
-    return false;
-  }
-  return true;
-}
-
-async function credential(ctx: ApiCtx): Promise<{ key: string; principal: string } | null> {
-  if (!(await activeRun(ctx))) return null;
-  const principal = ctx.capability?.actorId ?? ctx.actor?.p;
-  if (!principal) {
-    sendJson(ctx.res, 401, { error: "unauthorized" });
-    return null;
-  }
-  if (!(await activePrincipal(ctx.deps, principal))) {
-    sendJson(ctx.res, 403, { error: "forbidden" });
-    return null;
-  }
-  const personal = scopeId("personal", principal);
-  if (ctx.capability) {
-    const cap = ctx.capability;
-    const shared = cap.scopeId !== personal;
-    if (
-      cap.ownerConnections !== true ||
-      cap.deployment ||
-      cap.botActor ||
-      (shared &&
-        livePersonCapability(cap) &&
-        (await ctx.deps.config?.resolveSharingPostureDurable(personal, cap.scopeId)) !== "open")
-    ) {
-      sendJson(ctx.res, 403, {
-        error: "private_connections",
-        message:
-          "Use your connected apps in your own conversation, or explicitly open sharing to this conversation on a human-started turn.",
-      });
-      return null;
-    }
-  }
-  const own = (await ctx.deps.keychain?.listByOwner(principal)) ?? [];
-  const candidates = own.filter(
-    (c) => c.kind === "env" && isBackendCredential(c) && (!c.expiresAt || c.expiresAt > Date.now()),
-  );
-  if (candidates.length > 1) {
-    sendJson(ctx.res, 409, {
-      error: "ambiguous_credential",
-      message: "Choose a single Composio credential in your keychain.",
-    });
-    return null;
-  }
-  if (candidates.length === 1) {
-    const key = await ctx.deps.keychain!.composioKey(principal, candidates[0]!.id);
-    if (key) return { key, principal };
-    sendJson(ctx.res, 503, { error: "credential_unavailable" });
-    return null;
-  }
-  const org = scopeId("org", orgId());
-  const identity = ctx.deps.identity?.classify(principal) ?? { id: principal, type: "internal" as const };
-  const audience = ctx.capability && ctx.capability.scopeId !== personal ? ctx.capability.keychainMembers : [identity];
-  if (!audience?.length || audience.some((member) => member.type !== "internal")) {
-    sendJson(ctx.res, 403, { error: "unknown_audience" });
-    return null;
-  }
-  const grants =
-    (await ctx.deps.acl?.grantsOfKind(
-      "service-cred",
-      audience,
-      ctx.capability?.scopeId ?? personal,
-      org,
-      principalEntitledToScope,
-    )) ?? [];
-  const allowed = new Set(grants.map((g) => parseRef(g.ref).id));
-  const records = ((await ctx.deps.serviceCreds?.listServiceCredentials(org)) ?? []).filter(
-    (c) => c.enabled && c.hasSecret && c.delivery === "env" && c.envKey === "COMPOSIO_API_KEY" && allowed.has(c.slug),
-  );
-  if (records.length !== 1) {
-    sendJson(ctx.res, records.length ? 409 : 403, {
-      error: "composio_unavailable",
-      message: "App connections aren’t available for your account yet. Ask your administrator to enable them.",
-    });
-    return null;
-  }
-  const record = await ctx.deps.serviceCreds!.getServiceCredentialSecret(org, records[0]!.slug);
-  if (!record?.enabled || record.delivery !== "env" || record.envKey !== "COMPOSIO_API_KEY" || !record.secret) {
-    sendJson(ctx.res, 403, { error: "composio_unavailable" });
-    return null;
-  }
-  return { key: record.secret, principal };
-}
-
-async function request(ctx: ApiCtx, key: string, path: string, body?: unknown): Promise<Record<string, unknown>> {
-  const response = await (ctx.deps.composioFetch ?? fetch)(`https://backend.composio.dev/api/v3.1${path}`, {
-    method: body ? "POST" : "GET",
-    headers: { "x-api-key": key, "Content-Type": "application/json" },
-    ...(body ? { body: JSON.stringify(body) } : {}),
-    redirect: "error",
-    signal: AbortSignal.timeout(20_000),
-  });
-  if (!response.ok) throw new Error(`Composio request failed: ${await httpFailure(response)}`);
-  return (await response.json()) as Record<string, unknown>;
-}
 
 async function catalog(ctx: ApiCtx): Promise<void> {
   const access = await credential(ctx);
@@ -505,7 +377,8 @@ async function slackStatus(ctx: ApiCtx): Promise<void> {
       nativeOAuth = await nativeSlackConfigured(ctx);
       if (nativeOAuth && !(await hasSlackAccount(ctx)))
         return sendJson(ctx.res, 200, { connected: false, nativeOAuth, workspaceInstalled });
-    } catch {
+    } catch (error) {
+      reportFailure("Slack connection status", error);
       return sendJson(ctx.res, 502, { error: "slack_unavailable" });
     }
   }
@@ -540,163 +413,6 @@ async function slackStatus(ctx: ApiCtx): Promise<void> {
   return failed
     ? sendJson(ctx.res, 502, { error: "status_unavailable" })
     : sendJson(ctx.res, 200, { connected: false, workspaceInstalled, nativeOAuth });
-}
-
-async function hasSlackAccount(ctx: ApiCtx): Promise<boolean> {
-  for (const id of personIds(ctx.actor!.p)) {
-    const record = await ctx.deps.slackAccounts?.get(id);
-    if (record && samePerson(record.memberId, ctx.actor!.p)) return true;
-  }
-  return false;
-}
-
-async function slackReply(ctx: ApiCtx, send: boolean): Promise<void> {
-  if (!ctx.actor || ctx.actor.imp || ctx.capability)
-    return sendJson(ctx.res, 403, { error: "browser_identity_required" });
-  ctx.res.setHeader("Cache-Control", "no-store");
-  if (!(await activePrincipal(ctx.deps, ctx.actor.p))) return sendJson(ctx.res, 403, { error: "forbidden" });
-  const body = ctx.body as { sessionId?: unknown; text?: unknown; clientMessageId?: unknown } | null;
-  if (typeof body?.sessionId !== "string") return sendJson(ctx.res, 400, { error: "invalid_session" });
-  const source = await ctx.app.getSessionForViewer(body.sessionId, ctx.actor.p);
-  if (!source) return sendJson(ctx.res, 404, { error: "not_found" });
-  const target = parseSlackThreadRef(source.session.threadRef);
-  if (!target || !/^[CDG][A-Z0-9]+$/.test(target.container) || (target.root && !/^\d+\.\d+$/.test(target.root)))
-    return sendJson(ctx.res, 400, { error: "not_slack" });
-  if (
-    send &&
-    (typeof body.text !== "string" ||
-      !body.text.trim() ||
-      body.text.length > 4000 ||
-      typeof body.clientMessageId !== "string" ||
-      !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(body.clientMessageId))
-  )
-    return sendJson(ctx.res, 400, { error: "invalid_message" });
-  if (send && !ctx.deps.deliveries)
-    return sendJson(ctx.res, 503, {
-      error: "slack_unavailable",
-      message: "Slack replies are temporarily unavailable.",
-    });
-  let slackConfirmed = false;
-  const recordReply = async (ts: unknown, name: string) => {
-    slackConfirmed = true;
-    if (typeof ts !== "string" || !/^\d+\.\d+$/.test(ts)) throw new Error("Slack response missing timestamp");
-    await ctx.deps.deliveries!.enqueue({
-      destination: {
-        type: "web",
-        target: source.session.threadRef,
-        audienceScopeId: source.session.scopeId,
-        webTranscript: { kind: "slack_reply", sessionId: body.sessionId as string, ts, name },
-      },
-      text: body.text as string,
-      idempotencyKey: `slack-reply:${body.sessionId}:${target.container}:${ts}`,
-    });
-    return sendJson(ctx.res, 200, { sent: true, ts });
-  };
-  let attemptedSend = false;
-  const replyVia = async (connection: {
-    user?: string;
-    workspace?: string;
-    call: (method: string, payload?: Record<string, unknown>) => Promise<{ ok?: boolean; ts?: string } | undefined>;
-  }) => {
-    const conversation = await connection.call("conversations.info", { channel: target.container });
-    if (!conversation?.ok)
-      return sendJson(ctx.res, 403, {
-        error: "slack_access_denied",
-        message: "Your Slack account cannot access this conversation. Check its Slack permissions.",
-      });
-    if (!send)
-      return sendJson(ctx.res, 200, { connected: true, user: connection.user, workspace: connection.workspace });
-    attemptedSend = true;
-    const result = await connection.call("chat.postMessage", {
-      channel: target.container,
-      ...(target.root ? { thread_ts: target.root } : {}),
-      text: body.text,
-      client_msg_id: body.clientMessageId,
-      as_user: true,
-      unfurl_links: false,
-      unfurl_media: false,
-    });
-    if (!result?.ok)
-      return sendJson(ctx.res, 403, {
-        error: "slack_send_failed",
-        message:
-          "Slack could not send your message. Check your account’s conversation access and permission to send messages.",
-      });
-    return recordReply(result.ts, connection.user ?? ctx.actor!.p);
-  };
-  try {
-    const native = await nativeSlackConnection(ctx);
-    if (native) return await replyVia(native);
-    const hasComposioLink = await hasSlackAccount(ctx);
-    if (!hasComposioLink && (await nativeSlackConfigured(ctx)))
-      return sendJson(ctx.res, send ? 409 : 200, {
-        connected: false,
-        error: "slack_link_required",
-        message: "Link your personal Slack account to reply.",
-      });
-    const access = await credential(ctx);
-    if (!access) return;
-    for (const id of personIds(access.principal)) {
-      const record = await ctx.deps.slackAccounts?.get(id);
-      if (!record || !samePerson(record.memberId, access.principal)) continue;
-      const account = await request(ctx, access.key, `/connected_accounts/${encodeURIComponent(record.accountId)}`);
-      if (
-        account.id !== record.accountId ||
-        !composioUserIds(access.principal).includes(String(account.user_id)) ||
-        (account.toolkit as { slug?: string } | undefined)?.slug !== "slack" ||
-        account.status !== "ACTIVE" ||
-        account.is_disabled === true
-      )
-        continue;
-      const proxy = async (method: string, payload?: Record<string, unknown>) => {
-        const result = await request(ctx, access.key, "/tools/execute/proxy", {
-          connected_account_id: record.accountId,
-          endpoint: `https://slack.com/api/${method}`,
-          method: method === "chat.postMessage" ? "POST" : "GET",
-          ...(method === "chat.postMessage"
-            ? { body: payload, parameters: [{ name: "Content-Type", value: "application/json", in: "header" }] }
-            : {
-                parameters: Object.entries(payload ?? {}).map(([name, value]) => ({
-                  name,
-                  value: String(value),
-                  in: "query",
-                })),
-              }),
-        });
-        return result.data as
-          | { ok?: boolean; bot_id?: string; user_id?: string; team_id?: string; ts?: string; error?: string }
-          | undefined;
-      };
-      const identity = await proxy("auth.test");
-      const installation = await ctx.deps.slackInstallation?.get();
-      if (
-        !identity?.ok ||
-        identity.bot_id ||
-        identity.user_id !== record.userId ||
-        identity.team_id !== record.teamId ||
-        (installation?.teamId && identity.team_id !== installation.teamId)
-      )
-        continue;
-      return await replyVia({ call: proxy, user: record.user, workspace: record.workspace });
-    }
-    return sendJson(ctx.res, send ? 409 : 200, {
-      connected: false,
-      error: "slack_link_required",
-      message: "Link your personal Slack account to reply.",
-    });
-  } catch {
-    if (slackConfirmed)
-      return sendJson(ctx.res, 502, {
-        error: "transcript_unavailable",
-        message: "Slack sent your message, but its transcript update could not be saved. Do not resend it.",
-      });
-    return sendJson(ctx.res, 502, {
-      error: "slack_unavailable",
-      message: attemptedSend
-        ? "The send outcome is unknown. Check Slack before trying again."
-        : "Could not verify your Slack connection. Please try again.",
-    });
-  }
 }
 
 async function completeSlack(ctx: ApiCtx): Promise<void> {

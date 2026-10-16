@@ -39,8 +39,7 @@ export function createWebhookStore(
 ): WebhookStore {
   const runId = (id: string) => `webhook:${id}`;
   const withReceipt = async (webhook: Webhook): Promise<Webhook> => {
-    const { runs } = await fires.listByCron(runId(webhook.id), { limit: 1 });
-    const latest = runs[0];
+    const latest = await fires.latest(runId(webhook.id));
     const lastReceivedAt = latest?.firedAt;
     const lastRun = latest ? { firedAt: latest.firedAt, endedAt: latest.endedAt, status: latest.status } : undefined;
     return {

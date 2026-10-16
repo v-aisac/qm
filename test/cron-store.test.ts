@@ -762,6 +762,7 @@ test("the fire table is the journal of record — a write failure surfaces inste
       backfill: async () => {
         throw new Error("table down");
       },
+      latest: async () => undefined,
       listByCron: async () => ({ runs: [], total: 0 }),
       listByThreadRefs: async () => [],
       latestForThread: async () => undefined,

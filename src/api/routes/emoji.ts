@@ -1,3 +1,4 @@
+import { reportFailure } from "../../util/errors.ts";
 import { slackWebClient } from "../../slack/web-client.ts";
 import type { EmojiListResponse } from "@slack/web-api";
 import { runEmojiUpload, type EmojiUploadDeps } from "../../connectors/emoji-upload-service.ts";
@@ -20,7 +21,8 @@ export async function listWorkspaceEmoji(ctx: ApiCtx): Promise<void> {
     )) as EmojiListResponse;
     if (!data.ok) return sendJson(ctx.res, 502, { error: "emoji_unavailable" });
     return sendJson(ctx.res, 200, { emoji: data.emoji ?? {} });
-  } catch {
+  } catch (error) {
+    reportFailure("Slack workspace emoji", error);
     return sendJson(ctx.res, 502, { error: "emoji_unavailable" });
   }
 }
@@ -60,6 +62,6 @@ async function addEmoji(ctx: ApiCtx): Promise<void> {
 }
 
 export const emojiRoutes: ReadonlyArray<Route<ApiCtx>> = [
-  { method: "GET", path: "/v1/slack/emoji", auth: "either", handle: listWorkspaceEmoji },
+  { method: "GET", path: "/v1/slack/emoji", auth: "source", handle: listWorkspaceEmoji },
   { method: "POST", path: "/v1/emoji", auth: "either", handle: addEmoji },
 ];

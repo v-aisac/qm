@@ -7,5 +7,10 @@ export function slackWebClient(
   factory: SlackWebClientFactory = (token, options) => new WebClient(token, options),
   timeout = 20_000,
 ) {
-  return factory(token, { retryConfig: { retries: 0 }, rejectRateLimitedCalls: true, timeout });
+  return factory(token, {
+    retryConfig: { retries: 0 },
+    rejectRateLimitedCalls: true,
+    attachOriginalToWebAPIRequestError: false,
+    timeout,
+  });
 }
