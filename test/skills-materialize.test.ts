@@ -6,6 +6,7 @@ import { CapabilityUnsupportedError, type Sandbox, type SandboxHandle } from "..
 import type { SkillFile, SkillResolution } from "../src/skills/skill-store.ts";
 import {
   materializeSkillTree,
+  parsePinnedSkills,
   rankedSkills,
   renderSkillBody,
   safeSkillDirName,
@@ -190,13 +191,22 @@ test("pinned skills lead the shortlist regardless of the message and count towar
   const unpinned = names(skillsIndex(skills, [], "telescope"));
   assert.ok(!unpinned.includes("skill-19"), "a non-matching skill falls past the cap without a pin");
 
-  const index = skillsIndex(skills, [], "telescope", [], ["skill-19", "skill-18", "missing-skill"]);
+  const index = skillsIndex(skills, [], "telescope", [], ["skill-19", "missing-skill", "skill-18"]);
   assert.match(index, /Showing 12 of 20/);
   const shown = names(index);
-  assert.deepEqual(shown.slice(0, 2), ["skill-18", "skill-19"], "pinned skills come first, unknown names are ignored");
+  assert.deepEqual(
+    shown.slice(0, 2),
+    ["skill-19", "skill-18"],
+    "pins lead in their configured order; unknown names are ignored",
+  );
   assert.equal(shown[2], "skill-05", "ranking resumes after the pins");
   assert.equal(shown.length, 12);
   assert.equal(new Set(shown).size, 12, "a pinned skill is not listed twice");
+
+  assert.deepEqual(parsePinnedSkills([" voice ", "voice", "drafts"]), { value: ["voice", "drafts"] });
+  assert.ok("error" in parsePinnedSkills(undefined), "a missing list is an error, not a clear");
+  assert.ok("error" in parsePinnedSkills(["../etc"]));
+  assert.ok("error" in parsePinnedSkills(["a", "b", "c", "d", "e", "f", "g"]), "pins leave room for ranked skills");
 });
 
 test("a natural-language Gmail request keeps its relevant bundled skill in the shortlist", () => {

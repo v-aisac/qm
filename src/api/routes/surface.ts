@@ -18,7 +18,7 @@ import {
 } from "../../model/pi-models.ts";
 import { builtInModelCatalog, selectableCatalogForHarness, selectableModelCatalog } from "../../model/model-catalog.ts";
 import { errMessage } from "../../util/errors.ts";
-import { parsePinnedSkills } from "../../skills/pinned-skills.ts";
+import { parsePinnedSkills } from "../../skills/materialize.ts";
 import { renderAgentApis } from "../agent-api-catalog.ts";
 import { mintCapabilityToken, CAPABILITY_TTL_MS } from "../../auth/capability-token.ts";
 import { contentTypeWithUtf8Charset, pipeToResponse, sendJson } from "../http.ts";
@@ -1319,26 +1319,32 @@ export async function postSoul(ctx: ApiCtx): Promise<void> {
   }
 }
 
-async function pinnedSkills(ctx: ApiCtx): Promise<void> {
-  const { res, deps, body, capability, method } = ctx;
-  if (!capability) return sendJson(res, 401, { error: "unauthorized", message: "agent capability required" });
-  if (!deps.config) return sendJson(res, 404, { error: "not_found" });
-  const scope = capability.scopeId;
-  const kind = parseScopeId(scope).kind;
-  if (kind !== "personal" && kind !== "channel" && kind !== "group")
-    return sendJson(res, 403, { error: "forbidden", message: "pinned skills are set per person or conversation" });
-  if (method === "PUT") {
-    const parsed = parsePinnedSkills(isObj(body) ? body.names : undefined);
-    if ("error" in parsed) return sendJson(res, 400, { error: "bad_request", message: parsed.error });
-    await deps.config.setPinnedSkills(scope, parsed.value);
-    audit(deps, {
-      principalId: capability.actorId,
-      action: "pinned-skills.update",
-      resource: "pinned-skills",
-      scopeLabel: scope,
-    });
-  }
-  return sendJson(res, 200, { scopeId: scope, names: await deps.config.getPinnedSkillsDurable(scope) });
+async function getPinnedSkills(ctx: ApiCtx): Promise<void> {
+  if (!ctx.deps.config) return sendJson(ctx.res, 404, { error: "not_found" });
+  const target = await runtimeTarget(ctx);
+  if (!target) return sendJson(ctx.res, 403, { error: "forbidden" });
+  return sendJson(ctx.res, 200, {
+    scopeId: target.scope,
+    names: await ctx.deps.config.getPinnedSkillsDurable(target.scope),
+  });
+}
+
+async function putPinnedSkills(ctx: ApiCtx): Promise<void> {
+  if (!ctx.deps.config || !isObj(ctx.body)) return sendJson(ctx.res, 400, { error: "bad_request" });
+  if (ctx.capability && !livePersonCapability(ctx.capability))
+    return sendJson(ctx.res, 403, { error: "live_actor_required" });
+  const target = await runtimeTarget(ctx);
+  if (!target) return sendJson(ctx.res, 403, { error: "forbidden" });
+  const parsed = parsePinnedSkills(ctx.body.names);
+  if ("error" in parsed) return sendJson(ctx.res, 400, { error: "bad_request", message: parsed.error });
+  await ctx.deps.config.setPinnedSkills(target.scope, parsed.value);
+  audit(ctx.deps, {
+    principalId: target.actorId,
+    action: "pinned-skills.update",
+    resource: `pinned-skills: ${parsed.value.join(", ")}`,
+    scopeLabel: target.scope,
+  });
+  return sendJson(ctx.res, 200, { scopeId: target.scope, names: parsed.value });
 }
 
 export const surfaceRoutes: ReadonlyArray<Route<ApiCtx>> = [
@@ -1406,6 +1412,6 @@ export const surfaceRoutes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "PUT", path: "/v1/channel-header-pin", auth: "either", handle: putChannelHeaderPin },
   { method: "GET", path: "/v1/soul", auth: "either", handle: getSoul },
   { method: "POST", path: "/v1/soul", auth: "either", handle: postSoul },
-  { method: "GET", path: "/v1/pinned-skills", auth: "either", handle: pinnedSkills },
-  { method: "PUT", path: "/v1/pinned-skills", auth: "either", handle: pinnedSkills },
+  { method: "GET", path: "/v1/pinned-skills", auth: "either", handle: getPinnedSkills },
+  { method: "PUT", path: "/v1/pinned-skills", auth: "either", handle: putPinnedSkills },
 ];

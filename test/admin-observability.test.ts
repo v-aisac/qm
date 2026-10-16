@@ -1397,35 +1397,6 @@ test("admin governance: browse step limit round-trips, validates, and is org-sco
   }
 });
 
-test("admin governance: pinned skills round-trip per scope and validate", async () => {
-  const built = buildApp(testConfig({ dataDir: mkdtempSync(join(tmpdir(), "admin-pinnedskills-")) }));
-  const server = createInsecureTestServer(built.app, {
-    admin: built.admin,
-    config: built.config,
-    auditLog: built.auditLog,
-  });
-  server.listen(0);
-  const base = `http://localhost:${(server.address() as AddressInfo).port}`;
-  const putNames = (scope: string, names: unknown, headers: Record<string, string>) =>
-    fetch(base + `/v1/admin/scopes/${encodeURIComponent(scope)}/pinned-skills`, {
-      method: "PUT",
-      headers: { ...headers, "content-type": "application/json" },
-      body: JSON.stringify({ names }),
-    });
-  try {
-    assert.deepEqual((await getJson(base, "/v1/admin/scopes/channel:C1")).pinnedSkills, []);
-    assert.equal((await putNames("channel:C1", ["voice"], { "x-admin-actor": "nobody@default-org" })).status, 403);
-    assert.equal((await putNames("channel:C1", ["bad name"], ALICE)).status, 400);
-    assert.equal((await putNames("channel:C1", ["voice", "voice", "drafts"], ALICE)).status, 200);
-    assert.deepEqual((await getJson(base, "/v1/admin/scopes/channel:C1")).pinnedSkills, ["voice", "drafts"]);
-    assert.deepEqual((await getJson(base, "/v1/admin/scopes/channel:C2")).pinnedSkills, []);
-    assert.equal((await putNames("channel:C1", [], ALICE)).status, 200);
-    assert.deepEqual(await built.config.getPinnedSkillsDurable("channel:C1"), []);
-  } finally {
-    await new Promise<void>((r) => server.close(() => r()));
-  }
-});
-
 test("an OpenAI-only deployment still gets a browse model picker, and Anthropic picks are refused", async () => {
   const built = buildApp(
     testConfig({

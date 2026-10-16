@@ -566,7 +566,7 @@ const FAMILIES: AgentApiFamily[] = [
         method: "PUT",
         path: "/v1/pinned-skills",
         summary:
-          "replace this scope's pinned skills — body {names: string[]} (max 12; [] clears); pinned skills always lead the per-turn skills shortlist. Personal scope pins apply to all of that person's DMs; channel pins to that channel. Set only when the person asks",
+          "replace this scope's pinned skills — body {names: string[]} in display order (max 6; [] clears); they always lead the per-turn skills shortlist. Personal pins apply to that person's DMs, channel pins to that channel. Live person turns only",
       },
     ],
   },

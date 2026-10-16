@@ -362,31 +362,33 @@ describe("capability-token control plane (crons + webhooks + SOUL)", () => {
     );
   });
 
-  it("sets pinned skills on the token's own scope only", async () => {
+  it("sets pinned skills on the live speaker's own scope only", async () => {
     const put = async (body: unknown, token: string) =>
       fetch(`${base}/v1/pinned-skills`, {
         method: "PUT",
         headers: { "content-type": "application/json", "x-agent-capability": token },
         body: JSON.stringify(body),
       });
-    const mine = await put({ names: ["voice", " voice ", "drafts"], scopeId: "org:default-org" }, await capFor("U3"));
+    const live = { liveActor: true };
+    const mine = await put(
+      { names: ["voice", "drafts"], scopeId: "org:default-org" },
+      await capFor("U3", undefined, live),
+    );
     assert.equal(mine.status, 200);
-    assert.deepEqual(await mine.json(), { scopeId: "personal:U3", names: ["voice", "drafts"] });
     assert.deepEqual(await built.config.getPinnedSkillsDurable(scopeId("personal", "U3")), ["voice", "drafts"]);
     assert.deepEqual(await built.config.getPinnedSkillsDurable(scopeId("org", "default-org")), []);
-
     const read = await get("/v1/pinned-skills", { "x-agent-capability": await capFor("U3") });
     assert.deepEqual(((await read.json()) as { names: string[] }).names, ["voice", "drafts"]);
 
-    assert.equal((await put({ names: ["voice"] }, await capChannel("U8"))).status, 200);
+    assert.equal((await put({ names: ["voice"] }, await capChannel("U8", live))).status, 200);
     assert.deepEqual(await built.config.getPinnedSkillsDurable(scopeId("channel", "C")), ["voice"]);
 
-    assert.equal((await put({ names: ["../etc"] }, await capFor("U3"))).status, 400);
-    assert.equal((await put({ names: "voice" }, await capFor("U3"))).status, 400);
-    assert.equal((await put({ names: Array.from({ length: 13 }, (_, i) => `s${i}`) }, await capFor("U3"))).status, 400);
-    assert.equal((await put({ names: ["voice"] }, await capFor("U3", scopeId("org", "default-org")))).status, 403);
+    assert.equal((await put({ names: ["x"] }, await capFor("U3"))).status, 403, "background turns cannot change pins");
+    assert.equal((await put({}, await capFor("U3", undefined, live))).status, 400, "a missing list does not clear");
+    assert.equal((await put({ names: ["x"] }, await capFor("U3", scopeId("org", "default-org"), live))).status, 403);
+    assert.deepEqual(await built.config.getPinnedSkillsDurable(scopeId("personal", "U3")), ["voice", "drafts"]);
 
-    assert.equal((await put({ names: [] }, await capFor("U3"))).status, 200);
+    assert.equal((await put({ names: [] }, await capFor("U3", undefined, live))).status, 200);
     assert.deepEqual(await built.config.getPinnedSkillsDurable(scopeId("personal", "U3")), []);
   });
 

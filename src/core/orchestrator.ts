@@ -154,7 +154,7 @@ import {
   selectOverheardToImport,
   type OverheardEntryPayload,
 } from "../harness/replay.ts";
-import { errMessage, reportFailure, swallow, swallowAs } from "../util/errors.ts";
+import { errMessage, reportFailure, reportFailureAs, swallow, swallowAs } from "../util/errors.ts";
 import { isObj } from "../util/objects.ts";
 import { absoluteAppLinks, jsonbSafeStringify } from "../util/text.ts";
 import {
@@ -2971,13 +2971,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             : [];
         });
         const pinnedSkills = deps.config
-          ? (
-              await Promise.all(
-                [scopeId, resolution.orgScopeId].map((id) =>
-                  deps.config!.getPinnedSkillsDurable(id).catch(swallowAs("orchestrator: pinned skills", [])),
-                ),
-              )
-            ).flat()
+          ? await deps.config.getPinnedSkillsDurable(scopeId).catch(reportFailureAs("orchestrator: pinned skills", []))
           : [];
         turnContextBlocks["Skills"] = skillsIndex(
           nativeSkills,

@@ -5,7 +5,6 @@ import { orgId as configOrgId } from "../../config.ts";
 import type { ServerDeps } from "../deps.ts";
 import type { ApiCtx } from "./route.ts";
 import { parseCommandPolicy } from "../../policy/command-policy.ts";
-import { parsePinnedSkills } from "../../skills/pinned-skills.ts";
 import { parseScopeId, scopeId, type CommandPolicy, type Grant, type ScopeId } from "../../types.ts";
 import {
   defaultModelForHarness,
@@ -767,19 +766,6 @@ export const ADMIN_RESOURCES: readonly AdminResource[] = [
         return { value: names.length ? names : null };
       },
       (deps, scope, names) => deps.config!.setAckEmoji(scope, names),
-    ),
-  },
-  {
-    id: "pinned-skills",
-    kind: "string-list",
-    clearable: true,
-    label:
-      "Pinned skills: skill names always listed first in this scope's per-turn skills shortlist. Names that don't resolve to an available skill are ignored.",
-    readKey: "pinnedSkills",
-    get: (deps, scope) => deps.config!.getPinnedSkillsDurable(scope),
-    apply: generic<string[]>(
-      (body) => parsePinnedSkills((body as { names?: unknown }).names),
-      (deps, scope, names) => deps.config!.setPinnedSkills(scope, names),
     ),
   },
   {
