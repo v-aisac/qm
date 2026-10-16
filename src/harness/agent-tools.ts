@@ -4548,17 +4548,16 @@ function withToolApprovalGate(
       if (gate && !gate(approvalIdentity)) {
         const gated = GATED_TOOL_APPROVALS[approvalIdentity];
         const reason = gated?.reason ?? STRICT_TOOL_APPROVAL_REASON;
+        let summary: string | undefined;
+        if (gated && isObj(params)) summary = gated.summary(params);
+        else if (params !== undefined) summary = redactCommand(redactSecrets(JSON.stringify(params)));
         ref.pendingApprovals?.push({
           command: commandLabel,
           reason,
           kind: "approval",
           approvalKey: `tool:${approvalIdentity}`,
           ...(gated ? { grantModes: { session: false, always: false } } : {}),
-          ...(gated && isObj(params)
-            ? { summary: gated.summary(params) }
-            : params === undefined
-              ? {}
-              : { summary: redactCommand(redactSecrets(JSON.stringify(params))) }),
+          ...(summary === undefined ? {} : { summary }),
           ...(isObj(params) && typeof params.purpose === "string" ? { purpose: params.purpose } : {}),
         });
         ref.pausedOnApproval = true;
