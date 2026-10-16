@@ -18,7 +18,6 @@ export class SlackReply extends LitElement {
     error: { state: true },
     text: { state: true },
     label: { state: true },
-    sent: { state: true },
   };
   sessionId = "";
   user = "";
@@ -29,7 +28,6 @@ export class SlackReply extends LitElement {
   private error = "";
   private text = "";
   private label = "";
-  private sent = false;
   private inputObserver: ResizeObserver | null = null;
   private observedInput: HTMLTextAreaElement | null = null;
 
@@ -101,7 +99,6 @@ export class SlackReply extends LitElement {
     if (!this.connected || this.sending || !this.text.trim()) return;
     this.sending = true;
     this.error = "";
-    this.sent = false;
     try {
       const response = await this.request("reply", { text: this.text, clientMessageId: crypto.randomUUID() });
       const result = await response.json();
@@ -111,7 +108,6 @@ export class SlackReply extends LitElement {
         return;
       }
       this.text = "";
-      this.sent = true;
       this.dispatchEvent(new CustomEvent("slack-sent", { bubbles: true }));
     } catch {
       this.error = "The send outcome is unknown. Check Slack before trying again.";
@@ -132,7 +128,6 @@ export class SlackReply extends LitElement {
           maxLength: 4000,
           onInput: (e) => {
             this.text = (e.target as HTMLTextAreaElement).value;
-            this.sent = false;
           },
           onKeydown: (e) => {
             if (e.isComposing || e.keyCode === 229 || e.key !== "Enter" || e.shiftKey) return;
@@ -140,11 +135,7 @@ export class SlackReply extends LitElement {
           },
         })}
         <div class="composer-toolbar">
-          <div class="composer-left">
-            <span class="slack-reply-status" role="status"
-              >${this.sending ? "Sending to Slack…" : nothing}${this.sent ? "Sent to Slack." : nothing}</span
-            >
-          </div>
+          <div class="composer-left"></div>
           <div class="composer-right">
             <button
               class="send-btn"

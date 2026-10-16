@@ -31,6 +31,8 @@ test("Slack composer posts to the Slack endpoint and retains text after a reject
       return undefined;
     },
   });
+  const originalCustomEvent = globalThis.CustomEvent;
+  globalThis.CustomEvent = window.CustomEvent;
   try {
     h.releaseSessions();
     await h.boot();
@@ -56,13 +58,15 @@ test("Slack composer posts to the Slack endpoint and retains text after a reject
     succeed = true;
     widget.querySelector("form")!.dispatchEvent(new window.Event("submit", { cancelable: true }));
     await until(() => field.value === "");
-    assert.match(widget.textContent!, /Sent to Slack/);
+    assert.doesNotMatch(widget.textContent!, /Sending to Slack|Sent to Slack/);
+    assert.equal(widget.querySelector('[role="alert"]'), null);
     assert.equal(messages.length, 2);
     assert.equal(
       h.requests.some((path) => path === "/api/turn"),
       false,
     );
   } finally {
+    globalThis.CustomEvent = originalCustomEvent;
     await h.close();
   }
 });

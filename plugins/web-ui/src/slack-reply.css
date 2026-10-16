@@ -12,7 +12,3 @@ qm-slack-reply {
   max-width: none;
   margin-bottom: 0;
 }
-.slack-reply-status {
-  color: var(--muted-foreground);
-  font-size: 12px;
-}
