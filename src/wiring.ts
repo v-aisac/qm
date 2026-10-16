@@ -2908,7 +2908,7 @@ export function buildApp(
     },
     releaseInFlightRuns,
     async stop() {
-      await stopBackground();
+      await Promise.all([stopBackground(), scheduler.stopClaims(), webhookReceiver.stopClaims()]);
       await Promise.all([
         withTimeout(() => admittedWork.drained(), config.shutdownDrainMs, "admitted work drain").catch(
           swallowAs("wiring: admitted work drain failed", undefined),
@@ -2916,6 +2916,7 @@ export function buildApp(
         ...workers.map((w) => w.stop(config.shutdownDrainMs)),
       ]).catch(swallowAs("wiring: worker drain failed", undefined));
       await releaseInFlightRuns();
+      await Promise.all([scheduler.stop(), webhookReceiver.stop()]);
       await drain.stop();
       stopStreamSync();
       await Promise.all(
