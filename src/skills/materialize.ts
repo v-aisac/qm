@@ -139,10 +139,15 @@ export function skillsIndex(
   provenanceScopes: readonly ScopeId[] = [],
   query = "",
   usedNames: readonly string[] = [],
+  pinnedNames: readonly string[] = [],
 ): string {
   const provenance = new Set(provenanceScopes);
   const ranked = rankedSkills(resolved, query, usedNames);
-  const items = ranked.slice(0, 12);
+  const pinned = new Set(pinnedNames);
+  const items = [
+    ...ranked.filter((r) => pinned.has(r.skill!.manifest.name)),
+    ...ranked.filter((r) => !pinned.has(r.skill!.manifest.name)),
+  ].slice(0, 12);
   if (!items.length) return "";
   const lines = items.map((r) => {
     const m = r.skill!.manifest;

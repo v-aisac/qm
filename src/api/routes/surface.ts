@@ -18,6 +18,7 @@ import {
 } from "../../model/pi-models.ts";
 import { builtInModelCatalog, selectableCatalogForHarness, selectableModelCatalog } from "../../model/model-catalog.ts";
 import { errMessage } from "../../util/errors.ts";
+import { parsePinnedSkills } from "../../skills/pinned-skills.ts";
 import { renderAgentApis } from "../agent-api-catalog.ts";
 import { mintCapabilityToken, CAPABILITY_TTL_MS } from "../../auth/capability-token.ts";
 import { contentTypeWithUtf8Charset, pipeToResponse, sendJson } from "../http.ts";
@@ -1318,6 +1319,28 @@ export async function postSoul(ctx: ApiCtx): Promise<void> {
   }
 }
 
+async function pinnedSkills(ctx: ApiCtx): Promise<void> {
+  const { res, deps, body, capability, method } = ctx;
+  if (!capability) return sendJson(res, 401, { error: "unauthorized", message: "agent capability required" });
+  if (!deps.config) return sendJson(res, 404, { error: "not_found" });
+  const scope = capability.scopeId;
+  const kind = parseScopeId(scope).kind;
+  if (kind !== "personal" && kind !== "channel" && kind !== "group")
+    return sendJson(res, 403, { error: "forbidden", message: "pinned skills are set per person or conversation" });
+  if (method === "PUT") {
+    const parsed = parsePinnedSkills(isObj(body) ? body.names : undefined);
+    if ("error" in parsed) return sendJson(res, 400, { error: "bad_request", message: parsed.error });
+    await deps.config.setPinnedSkills(scope, parsed.value);
+    audit(deps, {
+      principalId: capability.actorId,
+      action: "pinned-skills.update",
+      resource: "pinned-skills",
+      scopeLabel: scope,
+    });
+  }
+  return sendJson(res, 200, { scopeId: scope, names: await deps.config.getPinnedSkillsDurable(scope) });
+}
+
 export const surfaceRoutes: ReadonlyArray<Route<ApiCtx>> = [
   ...sessionSharingRoutes,
   ...suggestedActivityRoutes,
@@ -1383,4 +1406,6 @@ export const surfaceRoutes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "PUT", path: "/v1/channel-header-pin", auth: "either", handle: putChannelHeaderPin },
   { method: "GET", path: "/v1/soul", auth: "either", handle: getSoul },
   { method: "POST", path: "/v1/soul", auth: "either", handle: postSoul },
+  { method: "GET", path: "/v1/pinned-skills", auth: "either", handle: pinnedSkills },
+  { method: "PUT", path: "/v1/pinned-skills", auth: "either", handle: pinnedSkills },
 ];

@@ -2970,11 +2970,21 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             ? [p.name]
             : [];
         });
+        const pinnedSkills = deps.config
+          ? (
+              await Promise.all(
+                [scopeId, resolution.orgScopeId].map((id) =>
+                  deps.config!.getPinnedSkillsDurable(id).catch(swallowAs("orchestrator: pinned skills", [])),
+                ),
+              )
+            ).flat()
+          : [];
         turnContextBlocks["Skills"] = skillsIndex(
           nativeSkills,
           [scopeId, resolution.orgScopeId],
           input.text,
           usedSkills,
+          pinnedSkills,
         );
         const turnEnvironmentContents = [
           manifest,

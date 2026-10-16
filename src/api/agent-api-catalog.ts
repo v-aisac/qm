@@ -559,6 +559,18 @@ const FAMILIES: AgentApiFamily[] = [
     ],
   },
   {
+    match: (m, p) => p === "/v1/pinned-skills" && (m === "GET" || m === "PUT"),
+    routes: [
+      { method: "GET", path: "/v1/pinned-skills", summary: "list the skills pinned to this conversation's scope" },
+      {
+        method: "PUT",
+        path: "/v1/pinned-skills",
+        summary:
+          "replace this scope's pinned skills — body {names: string[]} (max 12; [] clears); pinned skills always lead the per-turn skills shortlist. Personal scope pins apply to all of that person's DMs; channel pins to that channel. Set only when the person asks",
+      },
+    ],
+  },
+  {
     match: (m, p) => p === "/v1/soul" && (m === "POST" || m === "GET"),
     when: () => false,
     routes: [
