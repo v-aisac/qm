@@ -71,20 +71,27 @@ const OBSERVE_WINDOW_MS = 30_000;
 const MAX_CANVAS_ERRORS = 20;
 const canvasErrors: string[] = [];
 
-const canvasScripts = new Map<string, string>();
+const canvasScripts = new Map<string, { src: string; label: string }>();
 
-function recordCanvasError(message: string, source: string, line?: number): void {
-  const src = [...canvasScripts.keys()].find((key) => source.includes(key));
-  if (!src) return;
-  canvasErrors.push(`${canvasScripts.get(src)}${line ? ` line ${line}` : ""}: ${message}`);
+function pushCanvasError(entry: string): void {
+  canvasErrors.push(entry);
   canvasErrors.splice(0, canvasErrors.length - MAX_CANVAS_ERRORS);
 }
 
+function canvasScript(match: (src: string) => boolean): string | undefined {
+  return [...canvasScripts.values()].find((s) => match(s.src))?.label;
+}
+
 if (typeof addEventListener === "function") {
-  addEventListener("error", (e) => recordCanvasError(e.message, e.filename ?? "", e.lineno));
-  addEventListener("unhandledrejection", (e) =>
-    recordCanvasError(errMessage(e.reason), e.reason instanceof Error ? (e.reason.stack ?? "") : ""),
-  );
+  addEventListener("error", (e) => {
+    const label = canvasScript((src) => src === e.filename);
+    if (label) pushCanvasError(`${label} line ${e.lineno}: ${e.message}`);
+  });
+  addEventListener("unhandledrejection", (e) => {
+    const stack = e.reason instanceof Error ? (e.reason.stack ?? "") : "";
+    const label = canvasScript((src) => stack.includes(`${src}:`));
+    if (label) pushCanvasError(`${label}: ${errMessage(e.reason)}`);
+  });
 }
 
 async function fetchCanvas(sessionId: string): Promise<CanvasRecord | null> {
@@ -251,14 +258,16 @@ function runScript(panel: Panel, canvas: CanvasRecord): void {
     },
     send: (text) => sendFromCanvas(panel, text),
   });
+  const label = `canvas ${panel.sessionId} rev ${canvas.rev}`;
   const script = document.createElement("script");
   script.src = withBase(`/api/ui-canvas/${encodeURIComponent(panel.sessionId)}/script.js?rev=${canvas.rev}`);
   script.onerror = () => {
     if (panel.script !== script || signal.aborted) return;
+    pushCanvasError(`${label}: script failed to load`);
     reportHandledError("ui_canvas_script", new Error(`canvas script failed to load (rev ${canvas.rev})`));
     load(panel.sessionId);
   };
-  canvasScripts.set(script.src, `canvas ${panel.sessionId} rev ${canvas.rev}`);
+  canvasScripts.set(panel.sessionId, { src: script.src, label });
   panel.script = script;
   panel.el.append(script);
 }
