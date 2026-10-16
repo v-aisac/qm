@@ -71,12 +71,19 @@ const OBSERVE_WINDOW_MS = 30_000;
 const MAX_CANVAS_ERRORS = 20;
 const canvasErrors: string[] = [];
 
-if (typeof addEventListener === "function")
-  addEventListener("error", (e) => {
-    if (!e.filename?.includes("/api/ui-canvas/")) return;
-    canvasErrors.push(`${e.message} (${e.filename.split("?")[0]}:${e.lineno})`);
-    canvasErrors.splice(0, canvasErrors.length - MAX_CANVAS_ERRORS);
-  });
+function recordCanvasError(message: string, source: string): void {
+  const at = /\/api\/ui-canvas\/[^/]+\/script\.js\?rev=(\d+)(?::(\d+))?/.exec(source);
+  if (!at) return;
+  canvasErrors.push(`rev ${at[1]}: ${message}`);
+  canvasErrors.splice(0, canvasErrors.length - MAX_CANVAS_ERRORS);
+}
+
+if (typeof addEventListener === "function") {
+  addEventListener("error", (e) => recordCanvasError(e.message, e.filename ?? ""));
+  addEventListener("unhandledrejection", (e) =>
+    recordCanvasError(errMessage(e.reason), e.reason instanceof Error ? (e.reason.stack ?? "") : ""),
+  );
+}
 
 async function fetchCanvas(sessionId: string): Promise<CanvasRecord | null> {
   return (await api<{ canvas: CanvasRecord }>(`/api/ui-canvas/${encodeURIComponent(sessionId)}`)).canvas;
