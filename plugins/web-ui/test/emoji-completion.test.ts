@@ -44,7 +44,7 @@ test("emoji completion converts names and accepts suggestions without sending", 
     render(
       composerInput({
         value: draft,
-        placeholder: "Reply in Slack as regan",
+        placeholder: "Reply in Slack as Alice",
         disabled: false,
         onInput: (e: Event) => {
           draft = (e.target as HTMLTextAreaElement).value;
