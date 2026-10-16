@@ -12,6 +12,7 @@ export class SlackReply extends LitElement {
     sessionId: {},
     user: {},
     connected: { state: true },
+    linkAvailable: { state: true },
     loading: { state: true },
     sending: { state: true },
     error: { state: true },
@@ -22,6 +23,7 @@ export class SlackReply extends LitElement {
   sessionId = "";
   user = "";
   private connected = false;
+  private linkAvailable = false;
   private loading = true;
   private sending = false;
   private error = "";
@@ -73,10 +75,14 @@ export class SlackReply extends LitElement {
       const response = await this.request("reply-status");
       const result = await response.json();
       this.connected = response.ok && result.connected === true;
+      this.linkAvailable = response.ok;
       this.label = result.user ?? "yourself";
       this.error = response.ok ? "" : (result.message ?? "Could not check your Slack connection.");
+      if (!response.ok && result.error === "composio_unavailable")
+        this.error = "Slack linking isn’t configured for your account on this deployment.";
     } catch {
       this.connected = false;
+      this.linkAvailable = false;
       this.error = "Could not check your Slack connection.";
     } finally {
       this.loading = false;
@@ -154,7 +160,7 @@ export class SlackReply extends LitElement {
         ${this.error ? html`<div class="composer-error" role="alert">${this.error}</div>` : nothing}
       </form>`;
     return html`<div class="slack-reply-box">
-      <qm-slack-account .user=${this.user} .reply=${true} @slack-linked=${this.refresh}></qm-slack-account>
+      ${this.linkAvailable ? html`<qm-slack-account .user=${this.user} .reply=${true} @slack-linked=${this.refresh}></qm-slack-account>` : nothing}
       ${this.error ? html`<p class="slack-account-error" role="alert">${this.error} <button class="btn" @click=${this.refresh}>Check connection</button></p>` : nothing}
     </div>`;
   }
