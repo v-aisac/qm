@@ -62,16 +62,14 @@ hand.
 - Pinned canvases stay open; unpinned ones collapse after a reload. The person can pin,
   collapse or close it themselves.
 
-## Preview before going live
+## Check it, and roll back if it broke
 
-Any write that restyles or edits the page outside the canvas, or any large rework, goes through a draft first:
+For any write that restyles or edits the page outside the canvas, or any large rework:
 
-1. Write the draft: the same `POST /v1/ui/canvas` body plus `"draft": true` (and `"alwaysOn": true` if it targets the always-on canvas). Nothing changes on the person's screen.
-2. Look at it: `POST /v1/ui/observe` with `{"preview": true}`. The page loads a hidden, full copy of the app in the same tab, already signed in and on the same view, runs the draft there in place of the live canvas, and returns a snapshot of that copy: screenshot, html, and `errors` (script errors and rejections). Read the screenshot. Allow up to 30s.
-3. Fix and repeat until it looks right and `errors` is empty.
-4. Promote with `POST /v1/ui/canvas` `{"promote": true}` (plus `"alwaysOn": true` if needed), or discard with `DELETE /v1/ui/canvas?draft=true`.
-
-Text half-typed in the composer and exact scroll position are not carried into the copy.
+1. Save the current version first: `GET /v1/ui/canvas` (plus `?alwaysOn=true` if needed) and keep the response.
+2. Write the new version.
+3. Look at it: `POST /v1/ui/observe` with `{"screenshot": true}`. Read the screenshot and `snapshot.canvasErrors` (script errors thrown by canvas code).
+4. If it looks wrong or `canvasErrors` has new entries, write the saved version back right away (or `DELETE` if there was none), then fix and try again.
 
 ## Always on
 

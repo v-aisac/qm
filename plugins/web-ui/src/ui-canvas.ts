@@ -45,14 +45,12 @@ type ObserveSignal = {
   selector?: string;
   css?: boolean;
   screenshot?: boolean;
-  preview?: boolean;
 };
 type UiSignal = { kind: "canvas" } | ObserveSignal;
 
 declare global {
   interface Window {
     qmUiCanvasTake?: (sessionId: string, rev: number) => UiCanvasApi | undefined;
-    qmCanvasPreview?: { settled(): boolean; snapshot(signal: ObserveSignal): Promise<Record<string, unknown>> };
   }
 }
 
@@ -69,37 +67,19 @@ const waiting = new Map<string, Set<Owner>>();
 const announced = new Set<string>();
 
 const ALWAYS_ON = "always-on";
-const PREVIEW_PARAM = "qmCanvasPreview";
-const PREVIEW = typeof location !== "undefined" && new URLSearchParams(location.search).has(PREVIEW_PARAM);
-const PREVIEW_TIMEOUT_MS = 25_000;
 const OBSERVE_WINDOW_MS = 30_000;
-const PREVIEW_SETTLE_MS = 1_500;
-const sourceQuery = new Map<string, string>();
-const previewErrors: string[] = [];
-let loadsDone = 0;
+const MAX_CANVAS_ERRORS = 20;
+const canvasErrors: string[] = [];
 
-if (PREVIEW) {
-  addEventListener("error", (e) => previewErrors.push(e.message || String(e.error)));
-  addEventListener("unhandledrejection", (e) => previewErrors.push(errMessage(e.reason)));
-  window.qmCanvasPreview = {
-    settled: () => loadsDone > 0 && loading.size === 0,
-    snapshot: async (signal) => ({ ...(await buildSnapshot(signal, [], [])), preview: true, errors: previewErrors }),
-  };
-}
+if (typeof addEventListener === "function")
+  addEventListener("error", (e) => {
+    if (!e.filename?.includes("/api/ui-canvas/")) return;
+    canvasErrors.push(`${e.message} (${e.filename.split("?")[0]}:${e.lineno})`);
+    canvasErrors.splice(0, canvasErrors.length - MAX_CANVAS_ERRORS);
+  });
 
 async function fetchCanvas(sessionId: string): Promise<CanvasRecord | null> {
-  const get = (query: string) =>
-    api<{ canvas: CanvasRecord }>(`/api/ui-canvas/${encodeURIComponent(sessionId)}${query}`).then((r) => {
-      sourceQuery.set(sessionId, query);
-      return r.canvas;
-    });
-  if (PREVIEW)
-    try {
-      return await get("?draft=1");
-    } catch (error) {
-      if (!(error instanceof ApiError && error.status === 404)) throw error;
-    }
-  return get("");
+  return (await api<{ canvas: CanvasRecord }>(`/api/ui-canvas/${encodeURIComponent(sessionId)}`)).canvas;
 }
 
 function take(sessionId: string, rev: number): UiCanvasApi | undefined {
@@ -130,7 +110,6 @@ function load(sessionId: string, owner?: Owner): void {
     })
     .then((canvas) => {
       loading.delete(sessionId);
-      loadsDone++;
       if (state.dirty) return load(sessionId);
       if (canvas === undefined) return void waiting.delete(sessionId);
       loaded.set(sessionId, canvas);
@@ -264,9 +243,7 @@ function runScript(panel: Panel, canvas: CanvasRecord): void {
     send: (text) => sendFromCanvas(panel, text),
   });
   const script = document.createElement("script");
-  script.src = withBase(
-    `/api/ui-canvas/${encodeURIComponent(panel.sessionId)}/script.js${sourceQuery.get(panel.sessionId) || "?"}&rev=${canvas.rev}`,
-  );
+  script.src = withBase(`/api/ui-canvas/${encodeURIComponent(panel.sessionId)}/script.js?rev=${canvas.rev}`);
   script.onerror = () => {
     if (panel.script !== script || signal.aborted) return;
     reportHandledError("ui_canvas_script", new Error(`canvas script failed to load (rev ${canvas.rev})`));
@@ -337,7 +314,6 @@ async function update(panel: Panel, change: { pinned?: boolean; dismiss?: true }
 async function sendFromCanvas(panel: Panel, text: string): Promise<boolean> {
   const { chat, composer } = panel.owner;
   const agent = chat.state.agent;
-  if (PREVIEW) return false;
   if (panel.lifetime.signal.aborted || !agent || chat.state.sessionId !== panel.sessionId || !text.trim()) return false;
   const message = SENT_PREFIX + text.trim();
   if (agent.state.isStreaming) return (await chat.signalLiveRun("steer", message)).ok;
@@ -351,7 +327,7 @@ export function handleUiSignal(
   conversations: Conversation[],
   sessions: CoreSession[],
 ): void {
-  if (disabled() || !event.ui || PREVIEW) return;
+  if (disabled() || !event.ui) return;
   if (event.ui.kind === "canvas") {
     announced.add(ALWAYS_ON);
     load(ALWAYS_ON);
@@ -383,9 +359,7 @@ async function answerObserve(
   conversations: Conversation[],
   sessions: CoreSession[],
 ): Promise<void> {
-  const snapshot = await (
-    signal.preview ? previewSnapshot(signal) : buildSnapshot(signal, conversations, sessions)
-  ).catch((error: unknown) => ({
+  const snapshot = await buildSnapshot(signal, conversations, sessions).catch((error: unknown) => ({
     error: errMessage(error),
   }));
   const post = (body: unknown) =>
@@ -403,29 +377,6 @@ async function answerObserve(
     .catch((error: unknown) => {
       if (!answered(error)) reportHandledError("ui_observe_deliver", error);
     });
-}
-
-async function previewSnapshot(signal: ObserveSignal): Promise<Record<string, unknown>> {
-  const url = new URL(location.href);
-  url.searchParams.set(PREVIEW_PARAM, "1");
-  const frame = document.createElement("iframe");
-  frame.setAttribute("aria-hidden", "true");
-  frame.tabIndex = -1;
-  frame.style.cssText = `position:fixed;top:0;left:${-innerWidth - 100}px;width:${innerWidth}px;height:${innerHeight}px;border:0;pointer-events:none;`;
-  frame.src = url.toString();
-  document.body.append(frame);
-  try {
-    const deadline = Date.now() + PREVIEW_TIMEOUT_MS;
-    let hook: Window["qmCanvasPreview"];
-    while (!(hook = frame.contentWindow?.qmCanvasPreview)?.settled()) {
-      if (Date.now() > deadline) throw new Error("the preview copy of the app did not finish loading in time");
-      await new Promise((r) => setTimeout(r, 200));
-    }
-    await new Promise((r) => setTimeout(r, PREVIEW_SETTLE_MS));
-    return await hook!.snapshot(signal);
-  } finally {
-    frame.remove();
-  }
 }
 
 function stylesheetText(): string {
@@ -530,6 +481,7 @@ async function buildSnapshot(
     html: target ? serializeWithShadow(target) : null,
     ...(signal.css ? { css: stylesheetText() } : {}),
     ...(shot ? { screenshot: shot } : {}),
+    canvasErrors: [...canvasErrors],
     sessions,
   });
 }

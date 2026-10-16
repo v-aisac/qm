@@ -23,11 +23,8 @@ interface UiCanvasRouteDeps {
   readJson: <T extends object>(req: IncomingMessage, res: ServerResponse, allowEmpty?: boolean) => Promise<T | null>;
 }
 
-const canvasPath = (sessionId: string, user: string, url: URL) =>
-  `/v1/ui/canvases/${encodeURIComponent(sessionId)}?${new URLSearchParams({
-    principalId: user,
-    ...(url.searchParams.get("draft") === "1" ? { draft: "1" } : {}),
-  }).toString()}`;
+const canvasPath = (sessionId: string, user: string) =>
+  `/v1/ui/canvases/${encodeURIComponent(sessionId)}?${new URLSearchParams({ principalId: user }).toString()}`;
 
 export function uiCanvasRoutes(d: UiCanvasRouteDeps) {
   const guard = (c: UiCanvasCtx) => {
@@ -41,7 +38,7 @@ export function uiCanvasRoutes(d: UiCanvasRouteDeps) {
       path: "/api/ui-canvas/:sessionId",
       handle: async (c: UiCanvasCtx) => {
         if (guard(c)) return;
-        return d.relayCore(c.res, "GET", canvasPath(c.params.sessionId!, c.user, c.url));
+        return d.relayCore(c.res, "GET", canvasPath(c.params.sessionId!, c.user));
       },
     },
     {
@@ -51,7 +48,7 @@ export function uiCanvasRoutes(d: UiCanvasRouteDeps) {
         if (guard(c)) return;
         const { res, params, url, user } = c;
         const sessionId = params.sessionId!;
-        const r = await d.coreFetch("GET", canvasPath(sessionId, user, url));
+        const r = await d.coreFetch("GET", canvasPath(sessionId, user));
         if (r.status !== 200) return d.relay(res, r);
         let canvas: { js?: unknown; rev?: unknown } | undefined;
         try {

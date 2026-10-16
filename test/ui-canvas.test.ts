@@ -137,7 +137,7 @@ describe("ui canvas and ui observe", () => {
     assert.match(String(await installSharedCanvas(built.uiState, "U2", file("{"))), /^not a shared canvas: .*JSON/);
     assert.match(String(await installSharedCanvas(built.uiState, "U2", file('{"js":1}'))), /must be strings/);
     await installSharedCanvas(built.uiState, "U2", file('{"html":"<nav/>","js":"1"}'));
-    const live = await readUiCanvas(built.uiState, "U2", { target: "always-on" });
+    const live = await readUiCanvas(built.uiState, "U2", "always-on");
     assert.deepEqual([live?.html, live?.css, live?.js, live?.pinned], ["<nav/>", "", "1", true]);
   });
 
@@ -174,7 +174,7 @@ describe("ui canvas and ui observe", () => {
   });
 
   it("keeps canvas and observe keys out of the generic ui-state API", async () => {
-    for (const key of [`canvas:live:${sessionId}`, "observe:abc"]) {
+    for (const key of [`canvas:${sessionId}`, "observe:abc"]) {
       const put = await source("PUT", "/v1/ui-state", { principalId: "U1", key, value: { runId: "run-live" } });
       assert.equal(put.status, 400, key);
       assert.equal((await source("GET", `/v1/ui-state?principalId=U1&key=${key}`)).status, 400, key);

@@ -3,7 +3,6 @@ import { isTerminal } from "../../runs/run-store.ts";
 import { waitForClientResult } from "../../runs/run-signal-store.ts";
 import type { UiSignal } from "../../runs/session-state-bus.ts";
 import {
-  type UiCanvasRef,
   readUiCanvas,
   uiObserveKey,
   UiCanvasTooLargeError,
@@ -22,7 +21,6 @@ import { swallow } from "../../util/errors.ts";
 import type { ApiCtx, Route } from "./route.ts";
 
 const OBSERVE_TIMEOUT_MS = 15_000;
-const PREVIEW_TIMEOUT_MS = 30_000;
 const MAX_SELECTOR_CHARS = 500;
 
 interface UiTurn {
@@ -101,14 +99,16 @@ function flag(ctx: ApiCtx, name: string): boolean {
   return b[name] === true || q === "true" || q === "1";
 }
 
-function canvasRef(ctx: ApiCtx, turn: Pick<UiTurn, "sessionId">, draft = flag(ctx, "draft")): UiCanvasRef {
-  return { target: flag(ctx, "alwaysOn") ? ALWAYS_ON_CANVAS : turn.sessionId, draft };
+function canvasTarget(ctx: ApiCtx, turn: Pick<UiTurn, "sessionId">): string {
+  return flag(ctx, "alwaysOn") ? ALWAYS_ON_CANVAS : turn.sessionId;
 }
 
 async function getCanvas(ctx: ApiCtx): Promise<void> {
   const turn = await liveWebTurn(ctx);
   if (!turn) return;
-  return sendJson(ctx.res, 200, { canvas: await readUiCanvas(ctx.deps.uiState!, turn.actorId, canvasRef(ctx, turn)) });
+  return sendJson(ctx.res, 200, {
+    canvas: await readUiCanvas(ctx.deps.uiState!, turn.actorId, canvasTarget(ctx, turn)),
+  });
 }
 
 function parsePatch(body: unknown): UiCanvasPatch | string {
@@ -133,10 +133,10 @@ async function applyCanvas(
   turn: Pick<UiTurn, "actorId" | "sessionId" | "threadRef">,
   patch: UiCanvasPatch | null,
 ): Promise<void> {
-  const ref = canvasRef(ctx, turn);
+  const target = canvasTarget(ctx, turn);
   let canvas: UiCanvas | null;
   try {
-    canvas = await writeUiCanvas(ctx.deps.uiState!, turn.actorId, ref, patch);
+    canvas = await writeUiCanvas(ctx.deps.uiState!, turn.actorId, target, patch);
   } catch (error) {
     if (!(error instanceof UiCanvasTooLargeError)) throw error;
     return sendJson(ctx.res, 413, {
@@ -146,31 +146,20 @@ async function applyCanvas(
   }
   if (patch && !canvas)
     return sendJson(ctx.res, 404, { error: "no_canvas", message: "there is no canvas yet; pass html, css or js" });
-  const verb = ref.draft ? ["discard", "draft"] : ["dismiss", "write"];
   audit(ctx.deps, {
     principalId: turn.actorId,
-    action: `ui.canvas.${verb[patch ? 1 : 0]}`,
-    resource: ref.target === ALWAYS_ON_CANVAS ? "ui:always-on" : `session:${turn.sessionId}`,
+    action: patch ? "ui.canvas.write" : "ui.canvas.dismiss",
+    resource: target === ALWAYS_ON_CANVAS ? "ui:always-on" : `session:${turn.sessionId}`,
     scopeLabel: scopeId("personal", turn.actorId),
     ...(canvas ? { detail: `rev ${canvas.rev}` } : {}),
   });
-  if (!ref.draft) signalBrowser(ctx, turn, { kind: "canvas" });
+  signalBrowser(ctx, turn, { kind: "canvas" });
   return sendJson(ctx.res, 200, { canvas: canvasSummary(canvas) });
-}
-
-async function promote(ctx: ApiCtx, turn: UiTurn): Promise<void> {
-  const store = ctx.deps.uiState!;
-  const draftRef = canvasRef(ctx, turn, true);
-  const draft = await readUiCanvas(store, turn.actorId, draftRef);
-  if (!draft) return sendJson(ctx.res, 404, { error: "no_draft", message: "there is no draft to promote" });
-  await applyCanvas(ctx, turn, { html: draft.html, css: draft.css, js: draft.js, pinned: draft.pinned, replace: true });
-  await writeUiCanvas(store, turn.actorId, draftRef, null);
 }
 
 async function postCanvas(ctx: ApiCtx): Promise<void> {
   const turn = await liveWebTurn(ctx);
   if (!turn) return;
-  if (isObj(ctx.body) && ctx.body.promote === true) return promote(ctx, turn);
   const patch = parsePatch(ctx.body);
   if (typeof patch === "string") return sendJson(ctx.res, 400, { error: "bad_request", message: patch });
   return applyCanvas(ctx, turn, patch);
@@ -205,13 +194,11 @@ async function observe(ctx: ApiCtx): Promise<void> {
     callId,
     ...(selector ? { selector } : {}),
     ...(b.css === true ? { css: true } : {}),
-    ...(b.screenshot === true || b.preview === true ? { screenshot: true } : {}),
-    ...(b.preview === true ? { preview: true } : {}),
+    ...(b.screenshot === true ? { screenshot: true } : {}),
   });
-  const timeoutMs = b.preview === true ? PREVIEW_TIMEOUT_MS : OBSERVE_TIMEOUT_MS;
   let outcome: Awaited<ReturnType<typeof waitForClientResult>>;
   try {
-    outcome = await waitForClientResult(deps.signals, turn.runId, callId, { timeoutMs });
+    outcome = await waitForClientResult(deps.signals, turn.runId, callId, { timeoutMs: OBSERVE_TIMEOUT_MS });
   } finally {
     await deps.uiState!.delete(pendingId).catch((error: unknown) => swallow("ui observe pending cleanup", error));
   }
@@ -225,7 +212,7 @@ async function observe(ctx: ApiCtx): Promise<void> {
   if (typeof outcome === "string") {
     return sendJson(res, 504, {
       error: "ui_not_open",
-      message: `No open web UI tab answered within ${timeoutMs / 1000}s. The person may have closed QM; ask them to open it and retry.`,
+      message: `No open web UI tab answered within ${OBSERVE_TIMEOUT_MS / 1000}s. The person may have closed QM; ask them to open it and retry.`,
     });
   }
   return sendJson(res, 200, { snapshot: outcome.structured ?? null });
@@ -265,8 +252,7 @@ async function userCanvasContent(ctx: ApiCtx): Promise<void> {
   if (!principalId || !(await isCanvasTarget(ctx, params.sessionId!)))
     return sendJson(res, 400, { error: "bad_request", message: "principalId and a session id required" });
   if (!deps.uiState || !(await canvasEnabled(ctx, principalId))) return sendJson(res, 404, { error: "not_found" });
-  const ref = { target: params.sessionId!, draft: url.searchParams.get("draft") === "1" };
-  const canvas = await readUiCanvas(deps.uiState, principalId, ref);
+  const canvas = await readUiCanvas(deps.uiState, principalId, params.sessionId!);
   return canvas ? sendJson(res, 200, { canvas }) : sendJson(res, 404, { error: "not_found" });
 }
 
@@ -281,7 +267,7 @@ async function userCanvas(ctx: ApiCtx): Promise<void> {
   if (b.dismiss !== true && typeof b.pinned !== "boolean")
     return sendJson(res, 400, { error: "bad_request", message: "pass dismiss or pinned" });
   const patch = b.dismiss === true ? null : { pinned: b.pinned as boolean };
-  const canvas = await writeUiCanvas(deps.uiState, principalId, { target: sessionId }, patch);
+  const canvas = await writeUiCanvas(deps.uiState, principalId, sessionId, patch);
   if (patch && !canvas) return sendJson(res, 404, { error: "not_found" });
   const session = await deps.sessions?.get(sessionId);
   if (session)

@@ -21,15 +21,10 @@ export interface UiCanvasPatch {
 
 export const ALWAYS_ON_CANVAS = "always-on";
 
-export interface UiCanvasRef {
-  target: string;
-  draft?: boolean;
-}
-
 export class UiCanvasTooLargeError extends Error {}
 
-function uiCanvasKey({ target, draft }: UiCanvasRef): string {
-  return `canvas:${draft ? "draft" : "live"}:${target}`;
+function uiCanvasKey(target: string): string {
+  return `canvas:${target}`;
 }
 
 export function uiObserveKey(callId: string): string {
@@ -69,21 +64,17 @@ function nextCanvas(stored: unknown, patch: UiCanvasPatch | null): UiCanvas | { 
   return next;
 }
 
-export async function readUiCanvas(
-  store: UiStateStore,
-  principalId: string,
-  ref: UiCanvasRef,
-): Promise<UiCanvas | null> {
-  return asCanvas((await store.get(uiStateId(principalId, uiCanvasKey(ref))))?.value);
+export async function readUiCanvas(store: UiStateStore, principalId: string, target: string): Promise<UiCanvas | null> {
+  return asCanvas((await store.get(uiStateId(principalId, uiCanvasKey(target))))?.value);
 }
 
 export async function writeUiCanvas(
   store: UiStateStore,
   principalId: string,
-  ref: UiCanvasRef,
+  target: string,
   patch: UiCanvasPatch | null,
 ): Promise<UiCanvas | null> {
-  const id = uiStateId(principalId, uiCanvasKey(ref));
+  const id = uiStateId(principalId, uiCanvasKey(target));
   let written: unknown = null;
   const apply = (rec: PersistedUiState | null): PersistedUiState => {
     written = nextCanvas(rec?.value ?? null, patch);
@@ -111,12 +102,13 @@ export async function installSharedCanvas(
   if (typeof html !== "string" || typeof css !== "string" || typeof js !== "string")
     return "not a shared canvas: html, css and js must be strings";
   try {
-    return (await writeUiCanvas(
-      store,
-      principalId,
-      { target: ALWAYS_ON_CANVAS },
-      { html, css, js, pinned: shared.pinned !== false, replace: true },
-    ))!;
+    return (await writeUiCanvas(store, principalId, ALWAYS_ON_CANVAS, {
+      html,
+      css,
+      js,
+      pinned: shared.pinned !== false,
+      replace: true,
+    }))!;
   } catch (error) {
     if (error instanceof UiCanvasTooLargeError) return "the shared canvas is too large";
     throw error;
