@@ -1307,6 +1307,7 @@ const apiRoutes: readonly WebRoute[] = [
       return relayCore(c.res, "POST", `/v1/composio/slack/${action}`, JSON.stringify(body));
     },
   })),
+  { method: "GET", path: "/api/slack/emoji", handle: (c) => relayCore(c.res, "GET", "/v1/slack/emoji") },
   { method: "GET", path: "/api/composio/slack", handle: (c) => relayCore(c.res, "GET", "/v1/composio/slack") },
   {
     method: "POST",

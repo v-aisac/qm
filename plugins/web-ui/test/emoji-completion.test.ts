@@ -18,10 +18,26 @@ test("emoji completion converts names and accepts suggestions without sending", 
     originals.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     Object.defineProperty(globalThis, key, { configurable: true, value: dom.window[key] });
   }
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    Response.json({
+      emoji: {
+        party_blob: "https://emoji.slack-edge.com/test/blob.gif",
+        yay_blob: "alias:party_blob",
+        loop: "alias:loop",
+        unsafe: "javascript:alert(1)",
+      },
+    });
   const server = await createServer({ server: { middlewareMode: true, hmr: false }, appType: "custom" });
   try {
     const { render } = await server.ssrLoadModule("lit");
     const { composerInput } = await server.ssrLoadModule("/src/composer-input.ts");
+    const { workspaceEmojiRows } = await server.ssrLoadModule("/src/workspace-emoji.ts");
+    assert.deepEqual(
+      workspaceEmojiRows({ loop: "alias:loop", unsafe: "javascript:alert(1)", broken: "alias:missing" }),
+      [],
+    );
+    assert.equal(workspaceEmojiRows({ yay: "alias:thumbsup" })[0].c, ":yay:");
     const root = dom.window.document.querySelector("#root")!;
     let draft = "";
     let sends = 0;
@@ -40,6 +56,8 @@ test("emoji completion converts names and accepts suggestions without sending", 
       root,
     );
     const input = root.querySelector("textarea")!;
+    input.focus();
+    await new Promise((resolve) => setTimeout(resolve, 0));
     const type = (value: string, caret = value.length, isComposing = false) => {
       input.value = value;
       input.setSelectionRange(caret, caret);
@@ -47,6 +65,15 @@ test("emoji completion converts names and accepts suggestions without sending", 
     };
     const key = (key: string) =>
       input.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+    type(":yay_bl");
+    assert.ok(root.querySelector('img[src="https://emoji.slack-edge.com/test/blob.gif"]'));
+    key("Enter");
+    assert.equal(draft, ":yay_blob:");
+    assert.equal(sends, 0);
+    assert.equal(root.querySelector('[role="listbox"]'), null);
+    type(":party_blob:");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(draft, ":party_blob:");
     for (const shortcode of [":sweat-smile:", ":sweat_smile:", ":thumbsup:", ":+1:"]) {
       type(shortcode);
       await new Promise((resolve) => setTimeout(resolve, 0));
@@ -95,6 +122,7 @@ test("emoji completion converts names and accepts suggestions without sending", 
     render(null, root);
     assert.equal(root.querySelector('[role="listbox"]'), null);
   } finally {
+    globalThis.fetch = previousFetch;
     await server.close();
     dom.window.close();
     for (const [key, descriptor] of originals) {

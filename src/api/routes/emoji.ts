@@ -1,7 +1,31 @@
 import { runEmojiUpload, type EmojiUploadDeps } from "../../connectors/emoji-upload-service.ts";
 import { sendJson } from "../http.ts";
-import { isObj } from "./shared.ts";
+import { activePrincipal, orgScope, isObj } from "./shared.ts";
 import type { ApiCtx, Route } from "./route.ts";
+
+export async function listWorkspaceEmoji(ctx: ApiCtx): Promise<void> {
+  if (!ctx.actor || ctx.actor.imp || ctx.capability || !(await activePrincipal(ctx.deps, ctx.actor.p)))
+    return sendJson(ctx.res, 403, { error: "forbidden" });
+  ctx.res.setHeader("Cache-Control", "private, max-age=300");
+  const cached = await ctx.deps.config?.getSlackEmojiCatalogDurable(orgScope(ctx.deps));
+  if (cached && Object.keys(cached.emoji).length) return sendJson(ctx.res, 200, { emoji: cached.emoji });
+  const installation = await ctx.deps.slackInstallation?.get();
+  const token = installation?.botToken ?? ctx.deps.slackEnvBotToken;
+  if (!token) return sendJson(ctx.res, 200, { emoji: {} });
+  try {
+    const response = await (ctx.deps.slackInstallationFetch ?? fetch)("https://slack.com/api/emoji.list", {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/x-www-form-urlencoded" },
+      signal: AbortSignal.timeout(10_000),
+      redirect: "error",
+    });
+    const data = (await response.json()) as { ok?: boolean; emoji?: Record<string, string> };
+    if (!response.ok || !data.ok) return sendJson(ctx.res, 502, { error: "emoji_unavailable" });
+    return sendJson(ctx.res, 200, { emoji: data.emoji ?? {} });
+  } catch {
+    return sendJson(ctx.res, 502, { error: "emoji_unavailable" });
+  }
+}
 
 async function addEmoji(ctx: ApiCtx): Promise<void> {
   const { res, deps, body, capability } = ctx;
@@ -38,5 +62,6 @@ async function addEmoji(ctx: ApiCtx): Promise<void> {
 }
 
 export const emojiRoutes: ReadonlyArray<Route<ApiCtx>> = [
+  { method: "GET", path: "/v1/slack/emoji", auth: "either", handle: listWorkspaceEmoji },
   { method: "POST", path: "/v1/emoji", auth: "either", handle: addEmoji },
 ];
