@@ -1,3 +1,4 @@
+import { withAbort } from "../util/async.ts";
 import { normalizeAutomationTitle } from "../triggers/automation-store.ts";
 import type { AutomationJobQueue } from "../triggers/job-queue.ts";
 import type { AdmittedWork } from "../util/admitted-work.ts";
@@ -82,7 +83,8 @@ export function createWebhookReceiver(deps: WebhookReceiverDeps): WebhookReceive
   };
 
   const pending = new Set<Promise<void>>();
-  async function fire(job: WebhookFireJob) {
+  async function fire(job: WebhookFireJob, signal?: AbortSignal) {
+    signal?.throwIfAborted();
     const wh = await deps.webhooks.get(job.webhookId);
     const fireKey = `webhook:${job.webhookId}:${job.deliveryId}`;
     if (!wh || !wh.enabled || wh.archived) {
@@ -101,7 +103,7 @@ export function createWebhookReceiver(deps: WebhookReceiverDeps): WebhookReceive
     const deliveryId = job.deliveryId;
     const destination: Destination | undefined = wh.destination;
     const outcome = await runRecordedTrigger(
-      triggerDeps,
+      { ...triggerDeps, run: (request) => withAbort(() => deps.run(request), signal) },
       {
         owner: wh.owner,
         ownerScopeId: wh.ownerScopeId,
@@ -142,8 +144,8 @@ export function createWebhookReceiver(deps: WebhookReceiverDeps): WebhookReceive
       ...(outcome.note ? { error: outcome.note } : {}),
     });
   }
-  function trackedFire(job: WebhookFireJob) {
-    const work = deps.admittedWork ? deps.admittedWork.run(() => fire(job)) : fire(job);
+  function trackedFire(job: WebhookFireJob, signal?: AbortSignal) {
+    const work = deps.admittedWork ? deps.admittedWork.run(() => fire(job, signal)) : fire(job, signal);
     pending.add(work);
     void work.finally(() => pending.delete(work)).catch(() => {});
     return work;

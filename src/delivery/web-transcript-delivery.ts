@@ -1,20 +1,16 @@
 import type { Delivery, ScopeId, SessionEntry } from "../types.ts";
 import type { DeliveryStore } from "./delivery-store.ts";
-import {
-  appendEntryOutsideTurn,
-  entryDeliveryKey,
-  type SessionStore,
-  type TranscriptAppendSessions,
-} from "../sessions/session-store.ts";
-import { messageTag } from "../util/message-tag.ts";
+import { entryDeliveryKey, type SessionStore } from "../sessions/session-store.ts";
 import { reportFailure, swallow } from "../util/errors.ts";
 
 const DEDUPE_SCAN_LIMIT = 200;
 const RECORDED_CACHE_CAP = 1000;
 const WRITE_GIVEUP_MS = 10 * 60_000;
 
-type WebTranscriptSessions = TranscriptAppendSessions &
-  Pick<SessionStore, "get" | "getByThread" | "acquireLease" | "releaseLease" | "getEntries">;
+type WebTranscriptSessions = Pick<
+  SessionStore,
+  "append" | "hasDeliveryEntry" | "get" | "getByThread" | "acquireLease" | "releaseLease" | "getEntries"
+>;
 
 export function turnRecordedFailure(
   tail: readonly SessionEntry[],
@@ -46,18 +42,17 @@ export function withWebTranscriptDeliveries(store: DeliveryStore, sessions: WebT
     if (recorded.size >= RECORDED_CACHE_CAP) recorded.clear();
     recorded.add(key);
   };
-  const overdue = (d: Delivery): boolean => Date.now() - d.createdAt > WRITE_GIVEUP_MS;
+  const overdue = (d: Delivery): boolean =>
+    d.destination.webTranscript?.kind !== "slack_reply" && Date.now() - d.createdAt > WRITE_GIVEUP_MS;
 
   const appendTranscriptEntry = async (d: Delivery, session: { id: string; scopeId: ScopeId }): Promise<boolean> => {
     const { lease } = await sessions.acquireLease(session.id, "backfill");
     if (!lease) return false;
     try {
       const tail = await sessions.getEntries(session.id, { limit: DEDUPE_SCAN_LIMIT });
-      if (tail.some((entry) => entryDeliveryKey(entry) === d.idempotencyKey)) return true;
       const note = d.destination.webTranscript;
       const reply = note?.kind === "slack_reply" ? note : undefined;
-      if (reply && tail.some((entry) => entry.type === "user" && (entry.payload as { ts?: string })?.ts === reply.ts))
-        return true;
+      if (await sessions.hasDeliveryEntry(session.id, d.idempotencyKey, reply?.ts)) return true;
       const failure = note?.kind === "turn_failure" ? note : undefined;
       if (failure && turnRecordedFailure(tail, failure)) return true;
       const scopeLabel = session.scopeId;
@@ -91,18 +86,7 @@ export function withWebTranscriptDeliveries(store: DeliveryStore, sessions: WebT
           payload: { text: d.text, deliveryKey: d.idempotencyKey, ...(via ? { via } : {}) },
         };
       }
-      await appendEntryOutsideTurn(
-        sessions,
-        lease,
-        { ...entry, scopeLabel },
-        failure || reply
-          ? undefined
-          : (appended) =>
-              messageTag(
-                { from: "agent", ...(via ? { via } : {}), sentAt: new Date(appended.createdAt).toISOString() },
-                d.text,
-              ),
-      );
+      await sessions.append(lease, { ...entry, scopeLabel });
       return true;
     } finally {
       await sessions.releaseLease(lease);

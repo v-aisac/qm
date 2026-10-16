@@ -14,11 +14,14 @@ test("workspace emoji requires a browser identity and preserves Slack aliases wi
       capability,
       deps: {
         slackEnvBotToken: "test-bot-secret",
-        slackInstallationFetch: async (_url: string, init: RequestInit) => {
-          calls++;
-          assert.equal((init.headers as Record<string, string>).authorization, "Bearer test-bot-secret");
-          return Response.json({ ok: true, emoji: catalog });
-        },
+        slackWebClient: (token: string) => ({
+          async apiCall(method: string) {
+            calls++;
+            assert.equal(token, "test-bot-secret");
+            assert.equal(method, "emoji.list");
+            return { ok: true, emoji: catalog };
+          },
+        }),
       },
       res: {
         setHeader() {},

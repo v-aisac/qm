@@ -23,10 +23,6 @@ export interface WebhookEvent {
   payload: string;
 }
 
-export interface WebhookHistory {
-  events: WebhookEvent[];
-}
-
 export interface WebhookStore extends AutomationStore<Webhook, CreateWebhookInput, AutomationPatch> {
   recordEvent(id: string, event: WebhookEvent): Promise<WebhookEvent>;
   listEvents(id: string): Promise<WebhookEvent[]>;
@@ -39,15 +35,13 @@ export interface WebhookStore extends AutomationStore<Webhook, CreateWebhookInpu
 
 export function createWebhookStore(
   backing: DurableMap<Webhook> = createMemoryMap<Webhook>(),
-  history: DurableMap<WebhookHistory> = createMemoryMap<WebhookHistory>(),
   fires: AutomationRunStore = createMemoryAutomationRunStore(),
 ): WebhookStore {
   const runId = (id: string) => `webhook:${id}`;
   const withReceipt = async (webhook: Webhook): Promise<Webhook> => {
-    const events = (await history.get(webhook.id))?.events ?? [];
     const { runs } = await fires.listByCron(runId(webhook.id), { limit: 1 });
     const latest = runs[0];
-    const lastReceivedAt = Math.max(0, latest?.firedAt ?? 0, ...events.map((event) => event.receivedAt));
+    const lastReceivedAt = latest?.firedAt;
     const lastRun = latest ? { firedAt: latest.firedAt, endedAt: latest.endedAt, status: latest.status } : undefined;
     return {
       ...webhook,
@@ -95,32 +89,29 @@ export function createWebhookStore(
     ...management,
     async recordEvent(id, event) {
       const fireKey = `webhook:${id}:${event.deliveryId}`;
-      const legacy = (await history.get(id))?.events.find((item) => item.deliveryId === event.deliveryId);
-      const original = legacy ?? event;
       const accepted = await fires.accept(runId(id), {
         fireKey,
         threadRef: fireKey,
-        firedAt: original.receivedAt,
+        firedAt: event.receivedAt,
         status: "queued",
-        payload: original.payload.slice(0, 16_100),
-        deliveryId: original.deliveryId,
+        payload: event.payload.slice(0, 16_100),
+        deliveryId: event.deliveryId,
       });
       return {
         deliveryId: event.deliveryId,
         receivedAt: accepted.firedAt,
-        payload: accepted.payload ?? original.payload,
+        payload: accepted.payload ?? event.payload,
       };
     },
     async listEvents(id) {
       const { runs } = await fires.listByCron(runId(id), { limit: 50 });
-      const byDelivery = new Map(((await history.get(id))?.events ?? []).map((event) => [event.deliveryId, event]));
-      for (const run of runs) {
-        if (run.deliveryId !== undefined && run.payload !== undefined)
-          byDelivery.set(run.deliveryId, { deliveryId: run.deliveryId, receivedAt: run.firedAt, payload: run.payload });
-      }
-      return [...byDelivery.values()]
-        .sort((a, b) => b.receivedAt - a.receivedAt || a.deliveryId.localeCompare(b.deliveryId))
-        .slice(0, 50);
+      return runs
+        .flatMap((run) =>
+          run.deliveryId !== undefined && run.payload !== undefined
+            ? [{ deliveryId: run.deliveryId, receivedAt: run.firedAt, payload: run.payload }]
+            : [],
+        )
+        .sort((a, b) => b.receivedAt - a.receivedAt || a.deliveryId.localeCompare(b.deliveryId));
     },
     async beginFire(id, entry) {
       await fires.record(runId(id), entry);

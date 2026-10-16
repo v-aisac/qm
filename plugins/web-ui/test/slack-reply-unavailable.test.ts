@@ -5,6 +5,7 @@ import { harness } from "./deep-link-boot-fixture.ts";
 const session = {
   id: "slack-chat",
   threadRef: "ch:C123:123.456",
+  surface: "slack",
   scopeId: "channel:C123",
   type: "channel" as const,
   createdAt: Date.now(),

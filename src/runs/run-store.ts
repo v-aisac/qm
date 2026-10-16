@@ -19,6 +19,9 @@ export interface RunDeliveryState {
   editRef?: string;
 }
 
+export type RunStop =
+  { kind: "shutdown" } | { kind: "lease_expired" } | { kind: "error"; code?: string; status?: number };
+
 export interface Run {
   id: string;
   sessionId: string;
@@ -37,6 +40,7 @@ export interface Run {
   createdAt: number;
   startedAt: number | null;
   finishedAt: number | null;
+  lastStop?: RunStop | null;
 }
 
 interface TerminalCursor {
@@ -72,7 +76,7 @@ export interface RunStore {
 
   heartbeat(runId: string, leaseToken: string, ttlMs: number): Promise<boolean>;
 
-  releaseLease(runId: string, leaseToken: string): Promise<boolean>;
+  releaseLease(runId: string, leaseToken: string, stop?: RunStop): Promise<boolean>;
 
   complete(runId: string, leaseToken: string, result: TurnResult): Promise<boolean>;
 
@@ -80,13 +84,17 @@ export interface RunStore {
     runId: string,
     leaseToken: string,
     error: string,
-    opts?: { retry?: boolean; retryAfterMs?: number },
+    opts?: { retry?: boolean; retryAfterMs?: number; stop?: RunStop },
   ): Promise<{ requeued: boolean }>;
 
   setDeliveryState(runId: string, leaseToken: string | null, state: RunDeliveryState): Promise<boolean>;
 
   noteTurnUserSeq(runId: string, seq: number): Promise<boolean>;
 
+  latestForThreads(
+    threadRefs: readonly string[],
+    opts?: { excludePrivateMessages?: boolean },
+  ): Promise<Map<string, Run>>;
   latestForThread(threadRef: string, opts?: { excludePrivateMessages?: boolean }): Promise<Run | null>;
   pendingReturns(limit?: number, afterId?: string): Promise<Run[]>;
   terminalFinished(after: TerminalCursor, beforeMs: number, limit: number): Promise<Run[]>;

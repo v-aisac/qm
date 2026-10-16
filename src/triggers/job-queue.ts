@@ -3,7 +3,7 @@ import { createPgPool, type PgPool } from "../persistence/pg-pool.ts";
 import { errMessage } from "../util/errors.ts";
 
 export interface AutomationJobQueue<T> {
-  start(handlers: { onFire(job: T): Promise<void> }): Promise<void>;
+  start(handlers: { onFire(job: T, signal?: AbortSignal): Promise<void> }): Promise<void>;
   enqueueFire(job: T): Promise<void>;
   healthy(): boolean;
   stopClaims?(): Promise<void>;
@@ -16,7 +16,14 @@ export function createPgBossAutomationQueue<T extends object>(
   databaseUrl: string,
   schema: string = "pgboss",
   fireConcurrency: number = 1,
-  options: { name: string; key(job: T): string; startAfter(job: T): number; retryLimit: number; exclusive?: boolean },
+  options: {
+    name: string;
+    key(job: T): string;
+    startAfter(job: T): number;
+    retryLimit: number;
+    exclusive?: boolean;
+    timeoutMs?: number;
+  },
 ): AutomationJobQueue<T> {
   let pg: PgPool | null = null;
   const boss = new PgBoss({
@@ -74,7 +81,7 @@ export function createPgBossAutomationQueue<T extends object>(
           options.name,
           { pollingIntervalSeconds: 1, batchSize: 1, localConcurrency },
           async (jobs) => {
-            for (const job of jobs) await handlers.onFire(job.data);
+            for (const job of jobs) await handlers.onFire(job.data, job.signal);
           },
         );
       } catch (e) {
@@ -96,6 +103,7 @@ export function createPgBossAutomationQueue<T extends object>(
           startAfter: new Date(options.startAfter(job)),
           singletonKey: options.key(job),
           retryLimit: options.retryLimit,
+          expireInSeconds: Math.min(86_399, Math.max(1, Math.ceil((options.timeoutMs ?? 86_399_000) / 1000))),
           retryDelay: 5,
           retryBackoff: true,
           ...(options.exclusive ? { heartbeatSeconds: 30 } : {}),

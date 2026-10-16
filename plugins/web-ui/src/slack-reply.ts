@@ -1,6 +1,6 @@
 import { composerInput, resizeComposerInput } from "./composer-input";
 import { ArrowUp } from "lucide";
-import { icon } from "./ui";
+import { icon } from "./icons";
 import { tip } from "./tooltip";
 import { LitElement, html, nothing } from "lit";
 import { withBase } from "./core-bridge";

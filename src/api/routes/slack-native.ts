@@ -1,3 +1,5 @@
+import { ErrorCode, type WebAPIPlatformError, type AuthTestResponse } from "@slack/web-api";
+import { slackWebClient } from "../../slack/web-client.ts";
 import { personIds, samePerson } from "../../directory/person.ts";
 import { resolverFor } from "./connectors.ts";
 import type { ApiCtx } from "./route.ts";
@@ -18,27 +20,14 @@ export async function nativeSlackConnection(ctx: ApiCtx) {
       const auth = await ctx.deps.connectorTokens?.connectorDerivedAuth("slack.com", id, accountType);
       if (!auth) continue;
       const call = async (method: string, payload?: Record<string, unknown>, token = auth.accessToken) => {
-        const url = new URL(`https://slack.com/api/${method}`);
-        const sending = method === "chat.postMessage";
-        if (!sending)
-          for (const [name, value] of Object.entries(payload ?? {})) url.searchParams.set(name, String(value));
-        const response = await (ctx.deps.slackInstallationFetch ?? fetch)(url, {
-          method: sending ? "POST" : "GET",
-          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json; charset=utf-8" },
-          ...(sending ? { body: JSON.stringify(payload ?? {}) } : {}),
-          redirect: "error",
-          signal: AbortSignal.timeout(20_000),
-        });
-        if (!response.ok) throw new Error("Slack request failed");
-        return (await response.json()) as {
-          ok?: boolean;
-          bot_id?: string;
-          user_id?: string;
-          team_id?: string;
-          user?: string;
-          team?: string;
-          ts?: string;
-        };
+        const client = slackWebClient(token, ctx.deps.slackWebClient);
+        try {
+          return (await client.apiCall(method, payload)) as AuthTestResponse & { ts?: string };
+        } catch (error) {
+          if (error instanceof Error && "code" in error && error.code === ErrorCode.PlatformError)
+            return (error as WebAPIPlatformError).data as AuthTestResponse & { ts?: string };
+          throw error;
+        }
       };
       const identity = await call("auth.test");
       if (!identity.ok || identity.bot_id || !identity.user_id || !identity.team_id) continue;

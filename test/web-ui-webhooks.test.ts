@@ -244,10 +244,10 @@ test("webhook history is relayed with the authenticated viewer, not a query-stri
     }),
   );
   const { webhook } = (await res.json()) as { webhook: { id: string } };
-  const path = `${webBase}/api/webhooks/${webhook.id}/events`;
+  const path = `${webBase}/api/webhooks/${webhook.id}/runs`;
   const owner = await fetch(path, asUser("history-owner"));
   assert.equal(owner.status, 200);
-  assert.deepEqual(await owner.json(), { events: [] });
+  assert.deepEqual(await owner.json(), { runs: [], total: 0 });
   const stranger = await fetch(`${path}?viewer=history-owner`, asUser("stranger"));
   assert.equal(stranger.status, 404);
 });

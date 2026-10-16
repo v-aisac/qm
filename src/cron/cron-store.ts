@@ -5,14 +5,14 @@ import {
   normalizeAutomationTitle,
   type AutomationPatch,
 } from "../triggers/automation-store.ts";
-import type { Cron, CronFireLogEntry, CronFireNote, CronSchedule, Principal } from "../types.ts";
+import type { Cron, AutomationRun, CronFireNote, CronSchedule } from "../types.ts";
 import { createMemoryMap, type DurableMap } from "../persistence/durable-map.ts";
 import {
-  createMemoryCronFireStore,
+  createMemoryAutomationRunStore,
   type BeginFireResult,
-  type CronFireRecord,
-  type CronFireStore,
-} from "./fire-store.ts";
+  type AutomationRunRecord,
+  type AutomationRunStore,
+} from "../triggers/run-store.ts";
 import { contentPart } from "../triggers/trigger-store.ts";
 import { assertCronRuntime } from "./runtime.ts";
 import { advanceNextFireAt, isCalendarSchedule, normalizeSchedule, recoverNextFireAt } from "./schedule.ts";
@@ -20,9 +20,6 @@ import { advanceNextFireAt, isCalendarSchedule, normalizeSchedule, recoverNextFi
 export interface CreateCronInput extends CreateAutomationInput {
   runtime?: Cron["runtime"];
   schedule: Cron["schedule"];
-  runAs?: Cron["runAs"];
-  ownerResourcesRequireOpen?: boolean;
-  members?: Principal[];
   unattendedGrants?: string[];
   loopId?: string;
   sessionRef?: string;
@@ -31,9 +28,6 @@ export interface CreateCronInput extends CreateAutomationInput {
 export interface CronPatch extends AutomationPatch {
   runtime?: Cron["runtime"];
   schedule?: CronSchedule;
-  members?: Principal[];
-  runAs?: Cron["runAs"];
-  ownerResourcesRequireOpen?: boolean;
   unattendedGrants?: string[];
   sessionRef?: string | null;
 }
@@ -47,13 +41,13 @@ export const FIRE_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
 export const FIRE_RETENTION_KEEP_PER_CRON = 100;
 
 export interface CronStore extends AutomationStore<Cron, CreateCronInput, CronPatch> {
-  beginFire(id: string, entry: CronFireLogEntry, opts?: { exclusive?: boolean }): Promise<BeginFireResult>;
+  beginFire(id: string, entry: AutomationRun, opts?: { exclusive?: boolean }): Promise<BeginFireResult>;
   sweepStrandedFires(now: number): Promise<number>;
   pruneFires(now: number): Promise<number>;
-  recordFire(id: string, entry: CronFireLogEntry): Promise<void>;
-  listFires(id: string, opts?: { limit?: number }): Promise<{ runs: CronFireLogEntry[]; total: number }>;
-  firesByThreadRefs(threadRefs: readonly string[]): Promise<CronFireRecord[]>;
-  latestFireForThread(id: string, threadRef: string): Promise<CronFireLogEntry | undefined>;
+  recordFire(id: string, entry: AutomationRun): Promise<void>;
+  listFires(id: string, opts?: { limit?: number }): Promise<{ runs: AutomationRun[]; total: number }>;
+  firesByThreadRefs(threadRefs: readonly string[]): Promise<AutomationRunRecord[]>;
+  latestFireForThread(id: string, threadRef: string): Promise<AutomationRun | undefined>;
   backfillFires(): Promise<number>;
   setFireNote(id: string, note: CronFireNote): Promise<"applied" | "superseded" | "missing">;
   markFired(id: string, at: number, scheduledAt?: number): Promise<void>;
@@ -80,10 +74,10 @@ export function isDeferred(cron: Pick<Cron, "deferUntil">, now: number): boolean
 
 export function createCronStore(
   backing: DurableMap<Cron> = createMemoryMap<Cron>(),
-  opts?: { staleRunningMs?: number; fires?: CronFireStore },
+  opts?: { staleRunningMs?: number; fires?: AutomationRunStore },
 ): CronStore {
   const staleRunningMs = opts?.staleRunningMs ?? DEFAULT_FIRE_RUNNING_STALE_MS;
-  const fires = opts?.fires ?? createMemoryCronFireStore();
+  const fires = opts?.fires ?? createMemoryAutomationRunStore();
   const management = createAutomationStore<Cron, CreateCronInput, CronPatch>(backing, {
     create(input, now) {
       assertCronRuntime(input);
@@ -96,12 +90,9 @@ export function createCronStore(
         contentPart(input.action),
         contentPart(input.message),
         contentPart(input.destination),
-        contentPart(input.runAs),
-        contentPart(input.members),
         contentPart(input.unattendedGrants),
         contentPart(title),
         ...(input.loopId !== undefined ? [contentPart(input.loopId)] : []),
-        ...(input.ownerResourcesRequireOpen ? [contentPart("owner-resources-require-open")] : []),
         ...(input.runtime ? [contentPart(input.runtime)] : []),
       ];
       return {
@@ -109,9 +100,6 @@ export function createCronStore(
         fields: {
           schedule,
           ...(nextFireAt !== undefined ? { nextFireAt } : {}),
-          ...(input.runAs ? { runAs: input.runAs } : {}),
-          ...(input.ownerResourcesRequireOpen ? { ownerResourcesRequireOpen: true } : {}),
-          ...(input.members ? { members: input.members } : {}),
           ...(input.unattendedGrants ? { unattendedGrants: input.unattendedGrants } : {}),
           ...(input.loopId ? { loopId: input.loopId } : {}),
           ...(input.sessionRef ? { sessionRef: input.sessionRef } : {}),
@@ -128,9 +116,6 @@ export function createCronStore(
         fields.schedule = normalized.schedule;
         fields.nextFireAt = normalized.nextFireAt;
       }
-      if (patch.members !== undefined) fields.members = patch.members;
-      if (patch.runAs !== undefined) fields.runAs = patch.runAs;
-      if (patch.ownerResourcesRequireOpen === true) fields.ownerResourcesRequireOpen = true;
       if (patch.unattendedGrants !== undefined) fields.unattendedGrants = patch.unattendedGrants;
       if (patch.sessionRef !== undefined) fields.sessionRef = patch.sessionRef ?? undefined;
       return fields;
@@ -261,3 +246,12 @@ export function createCronStore(
     },
   };
 }
+
+export const DROP_RUN_AS_MIGRATION = {
+  id: "durable-map/crons/0001-drop-run-as",
+  statements: [
+    ...["crons", "loops"].map(
+      (table) => `CREATE TABLE IF NOT EXISTS ${table} (id TEXT PRIMARY KEY, json JSONB NOT NULL)`,
+    ),
+  ],
+};

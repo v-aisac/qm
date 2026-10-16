@@ -990,15 +990,22 @@ async function nativeSlackFixture(linked = true) {
   await f.deps.directory.replace([{ principalId: "alice", slackId: "U123", displayName: "Alice", type: "internal" }]);
   f.deps.slackEnvBotToken = "workspace-bot";
   if (linked) await f.deps.connectorTokens!.setConnectorToken("slack.com", "alice", { accessToken: "alice-user" });
-  const nativeCalls: Array<{ url: string; init?: RequestInit }> = [];
+  const nativeCalls: Array<{ method: string; token: string; payload?: object }> = [];
   const nativeReplies: unknown[] = [];
-  f.deps.slackInstallationFetch = async (input, init) => {
-    nativeCalls.push({ url: String(input), init });
-    if ((init?.headers as Record<string, string>).Authorization === "Bearer workspace-bot")
-      return Response.json({ ok: true, team_id: "T123" });
-    const value = nativeReplies.shift();
-    if (value instanceof Error) throw value;
-    return Response.json(value);
+  f.deps.slackWebClient = (token, options) => {
+    assert.equal(options.retryConfig?.retries, 0);
+    assert.equal(options.rejectRateLimitedCalls, true);
+    return {
+      async apiCall(method, payload) {
+        nativeCalls.push({ method, token, payload });
+        if (token === "workspace-bot") return { ok: true, team_id: "T123" };
+        const value = nativeReplies.shift();
+        if (value instanceof Error) throw value;
+        if ((value as { ok?: boolean })?.ok === false)
+          throw Object.assign(new Error("Slack API error"), { code: "slack_webapi_platform_error", data: value });
+        return value as { ok: boolean };
+      },
+    };
   };
   const nativeIdentity = { ok: true, user_id: "U123", team_id: "T123", user: "Alice", team: "Test" };
   return { ...f, nativeCalls, nativeReplies, nativeIdentity };
@@ -1020,9 +1027,9 @@ test("native Slack replies use the authenticated user's token and server destina
   });
   assert.equal(f.calls.length, 0);
   const sent = f.nativeCalls.at(-1)!;
-  assert.equal(sent.url, "https://slack.com/api/chat.postMessage");
-  assert.equal((sent.init!.headers as Record<string, string>).Authorization, "Bearer alice-user");
-  assert.deepEqual(JSON.parse(String(sent.init!.body)), {
+  assert.equal(sent.method, "chat.postMessage");
+  assert.equal(sent.token, "alice-user");
+  assert.deepEqual(sent.payload, {
     channel: "C123",
     thread_ts: "123.456",
     text: "Hello",
@@ -1040,7 +1047,7 @@ test("native Slack rejects bot, wrong person, and wrong workspace tokens", async
     const result = await f.invoke("/v1/composio/slack/reply", f.message);
     assert.equal(result.status, 409);
     assert.equal(
-      f.nativeCalls.some((c) => c.url.includes("chat.postMessage")),
+      f.nativeCalls.some((c) => c.method === "chat.postMessage"),
       false,
     );
   }

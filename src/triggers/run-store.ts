@@ -252,6 +252,26 @@ export function createPostgresAutomationRunStore(connectionString: string): Auto
           "ALTER TABLE cron_fires ADD COLUMN IF NOT EXISTS payload TEXT, ADD COLUMN IF NOT EXISTS delivery_id TEXT",
         ],
       },
+      {
+        id: "automation/runs/0003-webhook-history",
+        statements: [
+          `DO $body$ BEGIN
+            IF to_regclass('webhook_history') IS NOT NULL THEN
+              LOCK TABLE webhook_history IN ACCESS EXCLUSIVE MODE;
+              INSERT INTO cron_fires (cron_id, fire_key, thread_ref, fired_at, payload, delivery_id)
+              SELECT 'webhook:' || source.id,
+                     'webhook:' || source.id || ':' || (event->>'deliveryId'),
+                     'webhook:' || source.id || ':' || (event->>'deliveryId'),
+                     (event->>'receivedAt')::bigint,
+                     event->>'payload', event->>'deliveryId'
+              FROM webhook_history source
+              CROSS JOIN LATERAL jsonb_array_elements(source.json->'events') event
+              ON CONFLICT (cron_id, fire_key) DO NOTHING;
+              DROP TABLE webhook_history;
+            END IF;
+          END $body$`,
+        ],
+      },
     ],
     [LEGACY_FIRE_MAINTENANCE],
   );

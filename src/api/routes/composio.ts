@@ -593,34 +593,40 @@ async function slackReply(ctx: ApiCtx, send: boolean): Promise<void> {
     return sendJson(ctx.res, 200, { sent: true, ts });
   };
   let attemptedSend = false;
+  const replyVia = async (connection: {
+    user?: string;
+    workspace?: string;
+    call: (method: string, payload?: Record<string, unknown>) => Promise<{ ok?: boolean; ts?: string } | undefined>;
+  }) => {
+    const conversation = await connection.call("conversations.info", { channel: target.container });
+    if (!conversation?.ok)
+      return sendJson(ctx.res, 403, {
+        error: "slack_access_denied",
+        message: "Your Slack account cannot access this conversation. Check its Slack permissions.",
+      });
+    if (!send)
+      return sendJson(ctx.res, 200, { connected: true, user: connection.user, workspace: connection.workspace });
+    attemptedSend = true;
+    const result = await connection.call("chat.postMessage", {
+      channel: target.container,
+      ...(target.root ? { thread_ts: target.root } : {}),
+      text: body.text,
+      client_msg_id: body.clientMessageId,
+      as_user: true,
+      unfurl_links: false,
+      unfurl_media: false,
+    });
+    if (!result?.ok)
+      return sendJson(ctx.res, 403, {
+        error: "slack_send_failed",
+        message:
+          "Slack could not send your message. Check your account’s conversation access and permission to send messages.",
+      });
+    return recordReply(result.ts, connection.user ?? ctx.actor!.p);
+  };
   try {
     const native = await nativeSlackConnection(ctx);
-    if (native) {
-      const conversation = await native.call("conversations.info", { channel: target.container });
-      if (!conversation.ok)
-        return sendJson(ctx.res, 403, {
-          error: "slack_access_denied",
-          message: "Your Slack account cannot access this conversation. Check its Slack permissions.",
-        });
-      if (!send) return sendJson(ctx.res, 200, { connected: true, user: native.user, workspace: native.workspace });
-      attemptedSend = true;
-      const result = await native.call("chat.postMessage", {
-        channel: target.container,
-        ...(target.root ? { thread_ts: target.root } : {}),
-        text: body.text,
-        client_msg_id: body.clientMessageId,
-        as_user: true,
-        unfurl_links: false,
-        unfurl_media: false,
-      });
-      if (!result.ok)
-        return sendJson(ctx.res, 403, {
-          error: "slack_send_failed",
-          message:
-            "Slack could not send your message. Check your account’s conversation access and permission to send messages.",
-        });
-      return await recordReply(result.ts, native.user ?? ctx.actor.p);
-    }
+    if (native) return await replyVia(native);
     const hasComposioLink = await hasSlackAccount(ctx);
     if (!hasComposioLink && (await nativeSlackConfigured(ctx)))
       return sendJson(ctx.res, send ? 409 : 200, {
@@ -671,30 +677,7 @@ async function slackReply(ctx: ApiCtx, send: boolean): Promise<void> {
         (installation?.teamId && identity.team_id !== installation.teamId)
       )
         continue;
-      const conversation = await proxy("conversations.info", { channel: target.container });
-      if (!conversation?.ok)
-        return sendJson(ctx.res, 403, {
-          error: "slack_access_denied",
-          message: "Your Slack account cannot access this conversation. Check its Slack permissions.",
-        });
-      if (!send) return sendJson(ctx.res, 200, { connected: true, user: record.user, workspace: record.workspace });
-      attemptedSend = true;
-      const result = await proxy("chat.postMessage", {
-        channel: target.container,
-        ...(target.root ? { thread_ts: target.root } : {}),
-        text: body.text,
-        client_msg_id: body.clientMessageId,
-        as_user: true,
-        unfurl_links: false,
-        unfurl_media: false,
-      });
-      if (!result?.ok)
-        return sendJson(ctx.res, 403, {
-          error: "slack_send_failed",
-          message:
-            "Slack could not send your message. Check your account’s conversation access and permission to send messages.",
-        });
-      return await recordReply(result.ts, record.user);
+      return await replyVia({ call: proxy, user: record.user, workspace: record.workspace });
     }
     return sendJson(ctx.res, send ? 409 : 200, {
       connected: false,

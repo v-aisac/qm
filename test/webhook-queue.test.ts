@@ -1,3 +1,7 @@
+import { createPgBossAutomationQueue } from "../src/triggers/job-queue.ts";
+import { withAbort } from "../src/util/async.ts";
+import { createMemoryMap } from "../src/persistence/durable-map.ts";
+import type { IdempotencyRecord } from "../src/idempotency/idempotency-store.ts";
 import { spawn } from "node:child_process";
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -41,11 +45,15 @@ async function fixture(schema: string, run: () => Promise<{ status: "ok"; reply:
     webhooks,
     run,
     deliveries: createDeliveryStore(),
-    idempotency: createIdempotencyStore(),
     identity: createIdentityService(),
   };
+  const idempotencyBacking = createMemoryMap<IdempotencyRecord>();
   const receiver = () =>
-    createWebhookReceiver({ ...deps, jobQueue: createPgBossWebhookQueue(databaseUrl!, schema, 2) });
+    createWebhookReceiver({
+      ...deps,
+      idempotency: createIdempotencyStore(idempotencyBacking),
+      jobQueue: createPgBossWebhookQueue(databaseUrl!, schema, 2),
+    });
   return { webhook, webhooks, receiver };
 }
 
@@ -221,6 +229,47 @@ test(
       await until(() => calls === 1, 95_000);
     } finally {
       await replacement.stop();
+    }
+  },
+);
+
+test(
+  "queue expiration aborts the waiter before a retry claims the same delivery",
+  { skip, timeout: 30_000 },
+  async () => {
+    const queue = createPgBossAutomationQueue<{ id: string }>(databaseUrl!, "webhook_expiration_test", 2, {
+      name: "expiration",
+      key: (job) => job.id,
+      startAfter: () => Date.now(),
+      retryLimit: 1,
+      exclusive: true,
+      timeoutMs: 1000,
+    });
+    let attempts = 0;
+    let cancelled = false;
+    let completed = false;
+    try {
+      await queue.start({
+        onFire: async (_job, signal) => {
+          attempts++;
+          assert.ok(signal);
+          if (attempts === 1) {
+            try {
+              await withAbort(() => new Promise<void>(() => {}), signal);
+            } finally {
+              cancelled = signal.aborted;
+            }
+          } else {
+            assert.equal(cancelled, true);
+            completed = true;
+          }
+        },
+      });
+      await queue.enqueueFire({ id: "delivery" });
+      await until(() => completed, 25_000);
+      assert.equal(attempts, 2);
+    } finally {
+      await queue.stop();
     }
   },
 );

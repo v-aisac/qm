@@ -1,3 +1,5 @@
+import { slackWebClient } from "../../slack/web-client.ts";
+import type { EmojiListResponse } from "@slack/web-api";
 import { runEmojiUpload, type EmojiUploadDeps } from "../../connectors/emoji-upload-service.ts";
 import { sendJson } from "../http.ts";
 import { activePrincipal, orgScope, isObj } from "./shared.ts";
@@ -13,14 +15,10 @@ export async function listWorkspaceEmoji(ctx: ApiCtx): Promise<void> {
   const token = installation?.botToken ?? ctx.deps.slackEnvBotToken;
   if (!token) return sendJson(ctx.res, 200, { emoji: {} });
   try {
-    const response = await (ctx.deps.slackInstallationFetch ?? fetch)("https://slack.com/api/emoji.list", {
-      method: "POST",
-      headers: { authorization: `Bearer ${token}`, "content-type": "application/x-www-form-urlencoded" },
-      signal: AbortSignal.timeout(10_000),
-      redirect: "error",
-    });
-    const data = (await response.json()) as { ok?: boolean; emoji?: Record<string, string> };
-    if (!response.ok || !data.ok) return sendJson(ctx.res, 502, { error: "emoji_unavailable" });
+    const data = (await slackWebClient(token, ctx.deps.slackWebClient, 10_000).apiCall(
+      "emoji.list",
+    )) as EmojiListResponse;
+    if (!data.ok) return sendJson(ctx.res, 502, { error: "emoji_unavailable" });
     return sendJson(ctx.res, 200, { emoji: data.emoji ?? {} });
   } catch {
     return sendJson(ctx.res, 502, { error: "emoji_unavailable" });

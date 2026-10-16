@@ -1,3 +1,4 @@
+import type { TeamStore } from "../teams/teams.ts";
 import type { ExternalSlackPolicies } from "../resolution/external-slack.ts";
 import type { InviteMailer } from "../admin/invite-email.ts";
 import type { DeploymentInvitation } from "../deploy/email-access.ts";
@@ -19,6 +20,7 @@ import type {
   SessionEntry,
   TurnRequest,
   TurnResult,
+  TurnRuntime,
 } from "../types.ts";
 import type { OutgoingAttachment } from "../types.ts";
 import type { SecurityScreenProbe } from "../security/security-screener.ts";
@@ -32,13 +34,12 @@ import type { MonitorStore } from "../monitors/monitor-store.ts";
 import type { EngagedRegistry } from "../wake/engaged-registry.ts";
 import type { Orchestrator } from "../core/orchestrator.ts";
 import type { Run, RunDeliveryState, RunStore } from "../runs/run-store.ts";
-import type { TurnStream } from "../runs/turn-stream.ts";
+import type { GoalView, TurnStream } from "../runs/turn-stream.ts";
 import type { SessionStateBus, SessionStateEvent } from "../runs/session-state-bus.ts";
 import type { LedgerEventBus, OwnedLedgerEvent } from "../loops/ledger-events.ts";
 import type { SubscribeOptions } from "../util/event-bus.ts";
 import type { RunActivityEntry, RunActivityStore } from "../runs/run-activity-store.ts";
 import type { RunSignal, RunSignalStore } from "../runs/run-signal-store.ts";
-import type { TaskStore, TaskStatus } from "../tasks/task-store.ts";
 import type { ModelGateway } from "../model/model-gateway.ts";
 import type { ModelCredentialStore } from "../model/model-credential-store.ts";
 import type { UserModelCredentialStore } from "../model/user-model-credential-store.ts";
@@ -56,8 +57,8 @@ import type { CapabilityClaims } from "../auth/capability-token.ts";
 import type { ScopedConfigStore } from "../resolution/config-store.ts";
 import { type AdminService } from "../admin/admin-service.ts";
 import type { CronStore, CreateCronInput, CronPatch } from "../cron/cron-store.ts";
-import type { CronFireRecord } from "../cron/fire-store.ts";
-import type { WebhookStore, WebhookEvent, CreateWebhookInput } from "../webhooks/webhook-store.ts";
+import type { AutomationRunRecord } from "../triggers/run-store.ts";
+import type { WebhookStore, CreateWebhookInput } from "../webhooks/webhook-store.ts";
 import type { DeliveryStore } from "../delivery/delivery-store.ts";
 import type {
   ChannelMembership,
@@ -71,7 +72,7 @@ import type {
 } from "../directory/directory-store.ts";
 import type {
   Cron,
-  CronFireLogEntry,
+  AutomationRun,
   CronFireNote,
   Delivery,
   Destination,
@@ -204,7 +205,7 @@ export type VisibleCron = Cron & { scopeName?: string };
 
 export type ProjectView = Project & {
   scopeId: ScopeId;
-  members: Array<{ principalId: string; displayName: string; viaChannel?: boolean }>;
+  members: Array<{ principalId: string; displayName: string; avatarUrl?: string; viaChannel?: boolean }>;
 };
 
 type ProjectViewMutation =
@@ -217,7 +218,7 @@ interface DeploymentGitUrl {
 }
 
 interface SessionBackgroundView {
-  jobs: Array<{ processId: string; command: string; startedAt: number; expiresAt: number }>;
+  jobs: Array<{ processId: string; command: string; purpose?: string; startedAt: number; expiresAt: number }>;
   watches: Array<{
     id: string;
     processId: string;
@@ -232,7 +233,7 @@ interface SessionBackgroundView {
     id: string;
     title?: string;
     nextFireAt?: number;
-    lastFire?: { firedAt: number; status?: CronFireLogEntry["status"] };
+    lastFire?: { firedAt: number; status?: AutomationRun["status"] };
   }>;
 }
 
@@ -297,7 +298,10 @@ export interface App {
       createdAt: number;
       attachments?: Array<{ name: string; mimetype: string; sizeBytes: number }>;
     };
+    goal?: GoalView;
+    runtime?: TurnRuntime;
     partial?: string;
+    partialStartOffset?: number;
     alive?: boolean;
     stale?: boolean;
     replying?: boolean;
@@ -305,7 +309,6 @@ export interface App {
     firstBlock?: string;
     firstBlockClosed?: boolean;
     surfacePosted?: boolean;
-    tasks?: Array<{ id: string; title: string; status: TaskStatus }>;
     activity?: RunActivityEntry[];
     startedAt: number | null;
     finishedAt: number | null;
@@ -337,7 +340,14 @@ export interface App {
     sessionId: string,
     principalId: string,
     window?: TranscriptWindow,
-  ): Promise<{ session: Session; entries: TranscriptEntry[]; earlierEntries?: number; pins?: SessionPinView[] } | null>;
+  ): Promise<{
+    session: Session;
+    entries: TranscriptEntry[];
+    earlierEntries?: number;
+    pins?: SessionPinView[];
+    goal?: GoalView;
+    runtime?: TurnRuntime;
+  } | null>;
   canViewSessionSnapshot(
     sessionId: string,
     principalId: string,
@@ -360,6 +370,7 @@ export interface App {
     principalId: string,
     query: string,
   ): Promise<{ hits: ResourceSearchHit[]; failed: string[]; limited: string[] }>;
+  searchConversations: App["search"];
   searchSessions(principalId: string, query: string, limit?: number): Promise<SessionSearchHit[]>;
   search(
     query: string,
@@ -388,12 +399,15 @@ export interface App {
       archived?: boolean;
       pinned?: boolean;
       color?: string | null;
-      status?: Session["status"];
+      readAt?: number;
     },
   ): Promise<Session | null>;
   regenerateTitle(sessionId: string, principalId: string): Promise<{ title: string | null } | null>;
   detachSession(sessionId: string, principalId: string): Promise<{ detached: true } | null>;
-  adoptSession(sessionId: string, parentSessionId: string, principalId: string): Promise<{ adopted: true } | null>;
+  cancelSessionGoal(
+    sessionId: string,
+    principalId: string,
+  ): Promise<{ cancelled: true } | { cancelled: false; reason: "no_open_goal" | "busy" } | null>;
   spawnSession(principalId: string, opts: { scopeId: ScopeId; title?: string }): Promise<{ session: Session } | null>;
   discardSession(sessionId: string, principalId: string): Promise<boolean>;
   forkSession(
@@ -421,6 +435,7 @@ export interface App {
   promoteSkill(id: string, targetScopeId: ScopeId, actorId: string, liveActor: boolean): Promise<Skill>;
   belongsToScope(principalId: string, scope: ScopeId): Promise<boolean>;
   canManageArtifactHome(homeScopeId: ScopeId, createdBy: string, principalId: string): Promise<boolean>;
+  artifactGrantPermission(ownerScopeId: ScopeId, ref: string, principalId: string): Promise<Permission | null>;
   getArtifactHome(type: ArtifactType, idOrName: string): Promise<ArtifactHome | null>;
   moveArtifactHome(type: ArtifactType, id: string, toScope: ScopeId, movedBy: string): Promise<void>;
   getSoul(scopeId: ScopeId): {
@@ -446,9 +461,9 @@ export interface App {
   deleteCron(id: string, actorId?: string): Promise<void>;
   setCronEnabled(id: string, enabled: boolean, actorId?: string): Promise<void>;
   setCronFireNote(id: string, note: CronFireNote): Promise<"applied" | "superseded" | "missing">;
-  listCronFires(id: string, opts?: { limit?: number }): Promise<{ runs: CronFireLogEntry[]; total: number }>;
-  cronFiresByThreadRefs(threadRefs: readonly string[]): Promise<CronFireRecord[]>;
-  latestCronFireForThread(id: string, threadRef: string): Promise<CronFireLogEntry | undefined>;
+  listCronFires(id: string, opts?: { limit?: number }): Promise<{ runs: AutomationRun[]; total: number }>;
+  cronFiresByThreadRefs(threadRefs: readonly string[]): Promise<AutomationRunRecord[]>;
+  latestCronFireForThread(id: string, threadRef: string): Promise<AutomationRun | undefined>;
   setCronRuntime(id: string, runtime: Exclude<Cron["runtime"], undefined>): Promise<Cron | null>;
   setCronDestination(id: string, destination: Destination | undefined): Promise<Cron | null>;
   setCronRecipientConsent(id: string, recipientConsent: RecipientConsent): Promise<void>;
@@ -463,8 +478,7 @@ export interface App {
   listWebhookFires(
     id: string,
     viewer: string,
-  ): Promise<{ runs: Array<CronFireLogEntry & { payload?: string }>; total: number }>;
-  listWebhookEvents(id: string, viewer: string): Promise<Array<WebhookEvent & { sessionId?: string }>>;
+  ): Promise<{ runs: Array<AutomationRun & { payload?: string }>; total: number }>;
   listWebhooks(): Promise<Webhook[]>;
   setWebhookEnabled(id: string, enabled: boolean, actorId?: string): Promise<void>;
   setWebhookRecipientConsent(id: string, recipientConsent: RecipientConsent): Promise<void>;
@@ -588,7 +602,7 @@ export interface App {
   setDeploymentAlwaysOn(id: string, alwaysOn: boolean): Promise<Deployment>;
   setDeploymentEmbedAncestors(id: string, embedAncestors: string[]): Promise<Deployment>;
   setDeploymentPublic(idOrName: string, isPublic: boolean, actor: { createdBy: string }): Promise<Deployment>;
-  keepAlwaysOnWarm(): Promise<number>;
+  maintainDeployments(): Promise<number>;
   reachDeployment(id: string, principalId: string, opts?: ReachOptions): Promise<Reach>;
   deploymentLogsFor(
     id: string,
@@ -645,7 +659,6 @@ export interface AppDeps {
   runStreamEvents?: EventBus<RunStreamEvent>;
   runActivity?: RunActivityStore;
   signals?: RunSignalStore;
-  tasks?: TaskStore;
   modelGateway: ModelGateway;
   modelCredentials?: ModelCredentialStore;
   userModelCredentials?: UserModelCredentialStore;
@@ -669,6 +682,7 @@ export interface AppDeps {
   webhooks: WebhookStore;
   deliveries: DeliveryStore;
   directory: DirectoryStore;
+  teams?: Pick<TeamStore, "isMember">;
   emailAuthMembers?: DirectoryMember[];
   projects?: ProjectStore;
   deploy: DeployService;

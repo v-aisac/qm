@@ -128,14 +128,13 @@ test("re-creating a byte-identical disabled webhook re-enables it", async () => 
 });
 
 test("history survives reconstruction without entering webhook listings", async () => {
-  const history = createMemoryMap<import("../src/webhooks/webhook-store.ts").WebhookHistory>();
   const backing = createMemoryMap<Webhook>();
   const fires = createMemoryAutomationRunStore();
-  const store = createWebhookStore(backing, history, fires);
+  const store = createWebhookStore(backing, fires);
   const wh = await store.create(base);
   const event = { deliveryId: "one", receivedAt: 1, payload: "hello" };
   await store.recordEvent(wh.id, event);
-  const restored = createWebhookStore(backing, history, fires);
+  const restored = createWebhookStore(backing, fires);
   assert.deepEqual(await restored.listEvents(wh.id), [event]);
   assert.equal(JSON.stringify(await restored.list()).includes("hello"), false);
   assert.deepEqual(await restored.listEvents("unknown"), []);
@@ -173,13 +172,12 @@ test("a repeated receipt preserves the original payload and timestamp", async ()
 
 test("accepted receipts survive reconstruction even without a completion record", async () => {
   const backing = createMemoryMap<Webhook>();
-  const history = createMemoryMap<import("../src/webhooks/webhook-store.ts").WebhookHistory>();
   const fires = createMemoryAutomationRunStore();
-  const first = createWebhookStore(backing, history, fires);
+  const first = createWebhookStore(backing, fires);
   const wh = await first.create(base);
   await first.recordEvent(wh.id, { deliveryId: "new", receivedAt: 200, payload: "{}" });
   await first.recordEvent(wh.id, { deliveryId: "old", receivedAt: 100, payload: "{}" });
-  const restored = createWebhookStore(backing, history, fires);
+  const restored = createWebhookStore(backing, fires);
   assert.equal((await restored.get(wh.id))?.lastReceivedAt, 200);
   assert.equal((await restored.list())[0]?.lastReceivedAt, 200);
   assert.equal((await restored.get(wh.id))?.lastFiredAt, 200);

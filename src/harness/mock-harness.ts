@@ -7,11 +7,11 @@ import {
   type HarnessTurnResult,
 } from "./harness.ts";
 import { classifyScopeLabel } from "../classify/scope-classifier.ts";
-import { NonRetryableTurnError, TitleRejected } from "../core/turn-error.ts";
+import { NonRetryableTurnError, ProviderTurnError, TitleRejected } from "../core/turn-error.ts";
 import { NeedsApproval } from "../tools/primitives.ts";
 import { deterministicCompactSummary, estimateHistoryTokens } from "./context-compaction.ts";
 import { countTokens } from "../util/tokens.ts";
-import { recordStoppedReply } from "./harness-shared.ts";
+import { recordStoppedTurn } from "./harness-shared.ts";
 import {
   SECURITY_SCREEN_STEP,
   SECURITY_SCREEN_SYSTEM_PROMPT,
@@ -97,15 +97,19 @@ export function createMockHarness(): Harness {
     },
     {
       async runTurn(turn: HarnessTurnInput): Promise<HarnessTurnResult> {
-        const userEntry = await turn.emit({
-          type: "user",
-          payload: {
-            text: turn.input,
-            ...((turn.triggerTs ?? turn.entryTs) ? { ts: turn.triggerTs ?? turn.entryTs } : {}),
-            ...(turn.attachments?.length ? { attachments: turn.attachments } : {}),
-          },
-          scopeLabel: turn.scopeLabel,
-        });
+        const continued = turn.continueTurn ? turn.history.find((e) => e.seq === turn.resumeUserSeq) : undefined;
+        if (continued) turn = { ...turn, input: "", environment: undefined };
+        const userEntry =
+          continued ??
+          (await turn.emit({
+            type: "user",
+            payload: {
+              text: turn.input,
+              ...((turn.triggerTs ?? turn.entryTs) ? { ts: turn.triggerTs ?? turn.entryTs } : {}),
+              ...(turn.attachments?.length ? { attachments: turn.attachments } : {}),
+            },
+            scopeLabel: turn.scopeLabel,
+          }));
         const modelPrompt = [turn.input, turn.environment].filter((s) => s && s.trim()).join("\n\n");
 
         turn.recordModelCall({
@@ -145,7 +149,6 @@ export function createMockHarness(): Harness {
             ...(turn.documents?.length
               ? { documents: turn.documents.map(({ name, mimeType, artifactId }) => ({ name, mimeType, artifactId })) }
               : {}),
-            ...(turn.tapeMode ? { tapeMode: turn.tapeMode } : {}),
           },
           truncated: false,
           usage: callUsage(0),
@@ -182,7 +185,7 @@ export function createMockHarness(): Harness {
         } else if (command0 === "!boom-always" || boomAlwaysSessions.has(turn.session.id)) {
           boomAlwaysSessions.add(turn.session.id);
           throw new Error("boom: simulated turn fault");
-        } else if (command0.startsWith("(system note:") && resumePostSessions.has(turn.session.id)) {
+        } else if (resumePostSessions.has(turn.session.id)) {
           const msg = resumePostSessions.get(turn.session.id)!;
           resumePostSessions.delete(turn.session.id);
           await turn.emit({
@@ -193,12 +196,17 @@ export function createMockHarness(): Harness {
           const r = await turn.tools.post(msg);
           await turn.emit({
             type: "tool_result",
-            payload: { tool: "post", ok: r.ok, ...(r.deliveryId ? { deliveryId: r.deliveryId } : {}) },
+            payload: {
+              tool: "post",
+              ok: r.ok,
+              ...(r.deliveryId ? { deliveryId: r.deliveryId } : {}),
+              ...(r.deliveryKey ? { deliveryKey: r.deliveryKey } : {}),
+            },
             scopeLabel: turn.scopeLabel,
           });
           usedTool = true;
           reply = r.ok ? "(posted after resume)" : `[not sent] ${r.message ?? "failed"}`;
-        } else if (command0.startsWith("(system note:") && shutdownResumeSessions.has(turn.session.id)) {
+        } else if (shutdownResumeSessions.has(turn.session.id)) {
           shutdownResumeSessions.delete(turn.session.id);
           reply = "finished after resume";
         } else if (command0 === "!work-until-shutdown") {
@@ -217,7 +225,7 @@ export function createMockHarness(): Harness {
             if (!turn.cancel || turn.cancel.aborted) resolve();
             else turn.cancel.addEventListener("abort", () => resolve(), { once: true });
           });
-          await recordStoppedReply(turn, "(stopped)");
+          await recordStoppedTurn(turn, "");
           return { reply: "(stopped)", stopped: true, modelCalls: 1 };
         } else if (command0.startsWith("!post-lost-result ")) {
           const msg = cmd.slice(cmd.indexOf("!post-lost-result ") + "!post-lost-result ".length);
@@ -229,6 +237,13 @@ export function createMockHarness(): Harness {
           await turn.tools.post(msg);
           resumePostSessions.set(turn.session.id, `${msg} (repost)`);
           throw new Error("boom: simulated fault before the post's tool result landed");
+        } else if (command0 === "!over-budget") {
+          throw new ProviderTurnError("Model provider API error (budget_exceeded): ExceededBudget", {
+            code: "model_budget",
+            retryable: false,
+            status: 429,
+            raw: '429: {"message":"ExceededBudget: Team=team-a over 1d budget.","type":"budget_exceeded"}',
+          });
         } else if (command0.startsWith("!post-then-boom ")) {
           const rest = cmd.slice(cmd.indexOf("!post-then-boom ") + "!post-then-boom ".length);
           const bar = rest.indexOf("|");
@@ -242,7 +257,12 @@ export function createMockHarness(): Harness {
           const r = await turn.tools.post(first);
           await turn.emit({
             type: "tool_result",
-            payload: { tool: "post", ok: r.ok, ...(r.deliveryId ? { deliveryId: r.deliveryId } : {}) },
+            payload: {
+              tool: "post",
+              ok: r.ok,
+              ...(r.deliveryId ? { deliveryId: r.deliveryId } : {}),
+              ...(r.deliveryKey ? { deliveryKey: r.deliveryKey } : {}),
+            },
             scopeLabel: turn.scopeLabel,
           });
           resumePostSessions.set(turn.session.id, second);
@@ -372,12 +392,6 @@ export function createMockHarness(): Harness {
           reply = `wallclock:${turn.turnWallClockMs ?? 0}`;
         } else if (command0 === "!surfacename") {
           reply = `surface:${turn.surfaceName ?? "none"}`;
-        } else if (command0.startsWith("!askagent ")) {
-          const rest = command0.slice("!askagent ".length).trim();
-          const sp = rest.indexOf(" ");
-          const target = sp === -1 ? rest : rest.slice(0, sp);
-          const task = sp === -1 ? "help with this request" : rest.slice(sp + 1).trim();
-          reply = `I'll ask their personal agent.\n\n[[ask-agent: ${target} | ${task}]]`;
         } else if (command0.startsWith("!think ")) {
           await turn.emit({
             type: "thinking",
@@ -390,10 +404,12 @@ export function createMockHarness(): Harness {
             command: string;
             credentials?: string[];
             ownerAuth?: boolean;
+            sandboxId?: string;
           };
           const result = await turn.tools.execute(params.command, {
             credentials: params.credentials,
             ownerAuth: params.ownerAuth,
+            sandboxId: params.sandboxId,
           });
           await turn.emit({ type: "tool_result", payload: result, scopeLabel: turn.scopeLabel });
           turn.onProgress?.({ toolCalls: 1 });
@@ -570,9 +586,13 @@ export function createMockHarness(): Harness {
           const hits = await turn.tools.memorySearch(query);
           usedTool = true;
           reply = hits?.join("\n") ?? "(memory unavailable)";
+        } else if (command0.startsWith("!memoryread ")) {
+          const scope = command0.slice("!memoryread ".length).trim();
+          reply = (await turn.tools.memoryRead(scope)) ?? "(memory unavailable)";
+          usedTool = true;
         } else if (command0.startsWith("!memoryremember ")) {
           const fact = command0.slice("!memoryremember ".length).trim();
-          const added = await turn.tools.memoryRemember([fact]);
+          const added = await turn.tools.memoryAdd([fact]);
           usedTool = true;
           reply = added === null ? "(memory unavailable)" : `remembered ${added}`;
         } else if (command0.startsWith("!skill-run ")) {
@@ -664,7 +684,12 @@ export function createMockHarness(): Harness {
           const r = await turn.tools.reach(msg, { channel });
           await turn.emit({
             type: "tool_result",
-            payload: { tool: "reach", ok: r.ok, ...(r.deliveryId ? { deliveryId: r.deliveryId } : {}) },
+            payload: {
+              tool: "reach",
+              ok: r.ok,
+              ...(r.deliveryId ? { deliveryId: r.deliveryId } : {}),
+              ...(r.deliveryKey ? { deliveryKey: r.deliveryKey } : {}),
+            },
             scopeLabel: turn.scopeLabel,
           });
           usedTool = true;
@@ -682,7 +707,12 @@ export function createMockHarness(): Harness {
           const r = await turn.tools.post(msg, { ts: threadTs });
           await turn.emit({
             type: "tool_result",
-            payload: { tool: "post", ok: r.ok, ...(r.deliveryId ? { deliveryId: r.deliveryId } : {}) },
+            payload: {
+              tool: "post",
+              ok: r.ok,
+              ...(r.deliveryId ? { deliveryId: r.deliveryId } : {}),
+              ...(r.deliveryKey ? { deliveryKey: r.deliveryKey } : {}),
+            },
             scopeLabel: turn.scopeLabel,
           });
           usedTool = true;
@@ -697,7 +727,12 @@ export function createMockHarness(): Harness {
           const r = await turn.tools.post(msg, { broadcast: true });
           await turn.emit({
             type: "tool_result",
-            payload: { tool: "post", ok: r.ok, ...(r.deliveryId ? { deliveryId: r.deliveryId } : {}) },
+            payload: {
+              tool: "post",
+              ok: r.ok,
+              ...(r.deliveryId ? { deliveryId: r.deliveryId } : {}),
+              ...(r.deliveryKey ? { deliveryKey: r.deliveryKey } : {}),
+            },
             scopeLabel: turn.scopeLabel,
           });
           usedTool = true;
@@ -716,7 +751,12 @@ export function createMockHarness(): Harness {
             const r = await turn.tools.post(msg);
             await turn.emit({
               type: "tool_result",
-              payload: { tool: "post", ok: r.ok, ...(r.deliveryId ? { deliveryId: r.deliveryId } : {}) },
+              payload: {
+                tool: "post",
+                ok: r.ok,
+                ...(r.deliveryId ? { deliveryId: r.deliveryId } : {}),
+                ...(r.deliveryKey ? { deliveryKey: r.deliveryKey } : {}),
+              },
               scopeLabel: turn.scopeLabel,
             });
             if (r.ok) sent++;
@@ -733,7 +773,12 @@ export function createMockHarness(): Harness {
           const r = await turn.tools.post(msg);
           await turn.emit({
             type: "tool_result",
-            payload: { tool: "post", ok: r.ok, ...(r.deliveryId ? { deliveryId: r.deliveryId } : {}) },
+            payload: {
+              tool: "post",
+              ok: r.ok,
+              ...(r.deliveryId ? { deliveryId: r.deliveryId } : {}),
+              ...(r.deliveryKey ? { deliveryKey: r.deliveryKey } : {}),
+            },
             scopeLabel: turn.scopeLabel,
           });
           usedTool = true;
@@ -747,7 +792,12 @@ export function createMockHarness(): Harness {
           const r = await turn.tools.post(msg, undefined, paths);
           await turn.emit({
             type: "tool_result",
-            payload: { tool: "post", ok: r.ok, ...(r.deliveryId ? { deliveryId: r.deliveryId } : {}) },
+            payload: {
+              tool: "post",
+              ok: r.ok,
+              ...(r.deliveryId ? { deliveryId: r.deliveryId } : {}),
+              ...(r.deliveryKey ? { deliveryKey: r.deliveryKey } : {}),
+            },
             scopeLabel: turn.scopeLabel,
           });
           usedTool = true;
@@ -757,7 +807,12 @@ export function createMockHarness(): Harness {
           const r = await turn.tools.react({ ts: ts ?? "", emoji: emoji ?? "" });
           await turn.emit({
             type: "tool_result",
-            payload: { tool: "react", ok: r.ok, ...(r.deliveryId ? { deliveryId: r.deliveryId } : {}) },
+            payload: {
+              tool: "react",
+              ok: r.ok,
+              ...(r.deliveryId ? { deliveryId: r.deliveryId } : {}),
+              ...(r.deliveryKey ? { deliveryKey: r.deliveryKey } : {}),
+            },
             scopeLabel: turn.scopeLabel,
           });
           usedTool = true;
@@ -770,7 +825,12 @@ export function createMockHarness(): Harness {
           const r = await turn.tools.edit({ ref: editRef, text: newText });
           await turn.emit({
             type: "tool_result",
-            payload: { tool: "edit", ok: r.ok, ...(r.deliveryId ? { deliveryId: r.deliveryId } : {}) },
+            payload: {
+              tool: "edit",
+              ok: r.ok,
+              ...(r.deliveryId ? { deliveryId: r.deliveryId } : {}),
+              ...(r.deliveryKey ? { deliveryKey: r.deliveryKey } : {}),
+            },
             scopeLabel: turn.scopeLabel,
           });
           usedTool = true;
@@ -780,7 +840,12 @@ export function createMockHarness(): Harness {
           const r = await turn.tools.delete({ ref: delRef ?? "" });
           await turn.emit({
             type: "tool_result",
-            payload: { tool: "delete", ok: r.ok, ...(r.deliveryId ? { deliveryId: r.deliveryId } : {}) },
+            payload: {
+              tool: "delete",
+              ok: r.ok,
+              ...(r.deliveryId ? { deliveryId: r.deliveryId } : {}),
+              ...(r.deliveryKey ? { deliveryKey: r.deliveryKey } : {}),
+            },
             scopeLabel: turn.scopeLabel,
           });
           usedTool = true;
@@ -906,7 +971,6 @@ export function createMockHarness(): Harness {
                     documents: turn.documents.map(({ name, mimeType, artifactId }) => ({ name, mimeType, artifactId })),
                   }
                 : {}),
-              ...(turn.tapeMode ? { tapeMode: turn.tapeMode } : {}),
             },
             truncated: false,
             usage: callUsage(1),

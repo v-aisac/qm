@@ -19,10 +19,24 @@ export async function runRecordedTrigger(
     reply?: (text: string) => string;
   },
 ): Promise<TriggerOutcome> {
+  const record = async (outcome: TriggerOutcome) => {
+    await history.record({
+      ...history.entry,
+      endedAt: history.now(),
+      status: outcome.status ?? (outcome.authzFailed ? "refused" : "ok"),
+      ...(outcome.note ? { note: runDetail(outcome.note) } : {}),
+      ...(outcome.reply !== undefined ? { reply: (history.reply ?? runDetail)(outcome.reply) } : {}),
+      ...(outcome.sessionId ? { sessionId: outcome.sessionId } : {}),
+    });
+  };
   let outcome: TriggerOutcome;
   try {
     outcome = await runTrigger(deps, {
       ...spec,
+      onCompleted: async (result) => {
+        await record(result);
+        await spec.onCompleted?.(result);
+      },
       onClaimed: async () => {
         await history.begin(history.entry);
         await spec.onClaimed?.();
@@ -37,15 +51,6 @@ export async function runRecordedTrigger(
     });
     throw error;
   }
-  if (!outcome.deferred && (outcome.ran || outcome.authzFailed)) {
-    await history.record({
-      ...history.entry,
-      endedAt: history.now(),
-      status: outcome.status ?? (outcome.authzFailed ? "refused" : "ok"),
-      ...(outcome.note ? { note: runDetail(outcome.note) } : {}),
-      ...(outcome.reply !== undefined ? { reply: (history.reply ?? runDetail)(outcome.reply) } : {}),
-      ...(outcome.sessionId ? { sessionId: outcome.sessionId } : {}),
-    });
-  }
+  if (outcome.authzFailed) await record(outcome);
   return outcome;
 }

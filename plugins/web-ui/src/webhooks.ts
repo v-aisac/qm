@@ -4,7 +4,8 @@ import { html, nothing, render } from "lit";
 import { Check, ChevronDown } from "lucide";
 import { api } from "./core-bridge";
 import { errMessage } from "../../chassis/src/errors";
-import { closeFormMenus, copyText, icon, setFormMenuValue, toggleFormMenu } from "./ui";
+import { closeFormMenus, copyText, setFormMenuValue, toggleFormMenu } from "./ui";
+import { icon } from "./icons";
 import { listBackLink } from "./list-page";
 import { appState } from "./shell";
 
@@ -62,6 +63,22 @@ const page = createAutomationPage<WebhookView>({
       <div class="value">${w.verification.scheme}</div>
     </div>
     <div class="field"><label>Inbound URL</label>${copyRow(w.url)}</div>
+    ${
+      w.lastDeliveryId
+        ? html`<div class="field">
+            <label>Last delivery ID</label>
+            <div class="value">${w.lastDeliveryId}</div>
+          </div>`
+        : nothing
+    }
+    ${
+      w.lastError
+        ? html`<div class="field">
+            <label>Last error</label>
+            <div class="value pre">${w.lastError}</div>
+          </div>`
+        : nothing
+    }
     ${
       w.filters?.length
         ? html`<div class="field">

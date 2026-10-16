@@ -21,7 +21,6 @@ import { pickMatch, type DirectoryMember } from "../directory/directory-store.ts
 import { externalMemberActive } from "../identity/external-members.ts";
 import { hasRevisionEvents, recordMessageRevisions } from "../core/message-revisions.ts";
 import { answerWebContextRequest } from "./web-context.ts";
-import { isOpenScopeMember } from "../resolution/sharing-access.ts";
 import { availableRuntimeError, validateRuntimeChoice } from "./runtime-config.ts";
 import { assertCronRuntime } from "../cron/runtime.ts";
 import type { Cron } from "../types.ts";
@@ -49,11 +48,10 @@ export async function cronVisibility(deps: AppDeps, h: AppHelpers, principalId: 
   return {
     viewersOwn,
     scopeNames,
-    canSee: (c: Pick<import("../types.ts").Cron, "ownerScopeId" | "owner" | "members" | "destination">): boolean =>
+    canSee: (c: Pick<import("../types.ts").Cron, "ownerScopeId" | "owner" | "destination">): boolean =>
       allowed(c.ownerScopeId) &&
       (viewersOwn(c.owner) ||
         scopeNames.has(c.ownerScopeId) ||
-        c.members?.some((m) => viewersOwn(m.id)) === true ||
         (c.destination?.type === "principal" && viewersOwn(c.destination.target))),
   };
 }
@@ -84,8 +82,8 @@ export function createMessagingMethods(
   | "deleteWebhook"
   | "listWebhookFires"
   | "listWebhooks"
-  | "listWebhookEvents"
   | "setWebhookEnabled"
+  | "updateWebhook"
   | "setWebhookRecipientConsent"
   | "pendingDeliveries"
   | "enqueueDelivery"
@@ -128,8 +126,6 @@ export function createMessagingMethods(
   | "resolveReachTarget"
 > {
   const { adminBase, resolveReachTargetFor } = h;
-  const openMember = (actorId: string, scope: ScopeId) =>
-    isOpenScopeMember({ actorId, scope, config: deps.config, isCurrentSharedScopeMember: h.principalCanWriteScope });
   const { judgeAmbientContainer, ambientSelf } = ambient;
   const contextRequests = deps.contextRequests ?? createMemoryMap<SurfaceContextRequest>();
   const contextRequestListeners = new Set<(request: SurfaceContextRequest) => void>();
@@ -177,28 +173,11 @@ export function createMessagingMethods(
     async create(input) {
       await validateRuntime(input);
       validateUserSchedule(input.schedule);
-      if (input.runAs === "scopeShared") {
-        if (input.ownerScopeId.startsWith("personal:"))
-          throw new Error("scopeShared requires a shared (channel/group) scope, not a personal one");
-        const open = await openMember(input.owner, input.ownerScopeId);
-        if (!input.members?.length && !open)
-          throw new Error("scopeShared requires a member snapshot or current Open scope membership");
-        if (open) input = { ...input, ownerResourcesRequireOpen: true };
-      }
       return input;
     },
     async update(before, patch) {
       if (patch.runtime !== undefined) await validateRuntime({ ...before, ...patch });
       if (patch.schedule) validateUserSchedule(patch.schedule);
-      if (patch.runAs === "scopeShared") {
-        if (before.ownerScopeId.startsWith("personal:"))
-          throw new Error("scopeShared requires a shared (channel/group) scope, not a personal one");
-        const members = patch.members ?? before.members;
-        const open = await openMember(before.owner, before.ownerScopeId);
-        if (!members?.length && !open)
-          throw new Error("scopeShared requires a member snapshot or current Open scope membership");
-        if (open) patch = { ...patch, ownerResourcesRequireOpen: true };
-      }
       const grantsReaffirmed = patch.unattendedGrants !== undefined;
       const guardedPatch =
         (before.unattendedGrants?.length ?? 0) > 0 && !grantsReaffirmed ? { ...patch, unattendedGrants: [] } : patch;
@@ -264,41 +243,23 @@ export function createMessagingMethods(
     deleteWebhook: webhookManagement.delete,
     async listWebhookFires(id, viewer) {
       const { runs, total } = await deps.webhooks.listFires(id, { limit: 50 });
-      const events = await deps.webhooks.listEvents(id);
-      const byKey = new Map(runs.map((run) => [run.fireKey, run]));
-      for (const event of events) {
-        const fireKey = `webhook:${id}:${event.deliveryId}`;
-        if (!byKey.has(fireKey)) byKey.set(fireKey, { fireKey, threadRef: fireKey, firedAt: event.receivedAt });
-      }
       const visibleRuns = await Promise.all(
-        [...byKey.values()]
+        runs
           .sort((a, b) => a.firedAt - b.firedAt)
           .slice(-50)
           .map(async (run) => {
             const { sessionId: _storedSession, ...entry } = run;
             const session = await deps.sessions.getByThread(run.threadRef);
             const visible = session && (await h.sessionForViewer(session.id, viewer));
-            const event = events.find((event) => `webhook:${id}:${event.deliveryId}` === run.fireKey);
             return {
               ...entry,
-              ...(event ? { payload: event.payload } : {}),
               ...(visible ? { sessionId: session.id } : {}),
             };
           }),
       );
-      return { runs: visibleRuns, total: Math.max(total, byKey.size) };
+      return { runs: visibleRuns, total };
     },
     getWebhook: webhookManagement.get,
-    async listWebhookEvents(id, viewer) {
-      const events = await deps.webhooks.listEvents(id);
-      return Promise.all(
-        events.map(async (event) => {
-          const session = await deps.sessions.getByThread(`webhook:${id}:${event.deliveryId}`);
-          const visible = session && (await h.sessionForViewer(session.id, viewer));
-          return { ...event, ...(visible ? { sessionId: session.id } : {}) };
-        }),
-      );
-    },
     listWebhooks: webhookManagement.list,
     setWebhookEnabled: webhookManagement.setEnabled,
     setWebhookRecipientConsent: webhookManagement.setRecipientConsent,
@@ -528,7 +489,13 @@ export function createMessagingMethods(
       if (!delivery || delivery.destination.type !== "principal") return;
       const recipientId = delivery.destination.target;
       const recipientScope = scopeId("personal", recipientId);
-      const session = await deps.sessions.getOrCreateByThread(recipientThreadRef, "dm", recipientScope);
+      const session = await deps.sessions.getOrCreateByThread(
+        recipientThreadRef,
+        "dm",
+        recipientScope,
+        undefined,
+        "slack",
+      );
       await deps.deliveries.recordRecipientThread(delivery.id, recipientThreadRef, Date.now());
       await deps.sessions.addParticipant(session.id, recipientId);
     },
