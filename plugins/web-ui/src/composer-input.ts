@@ -1,3 +1,4 @@
+import { emojiCompletion } from "./emoji-completion";
 import { html, nothing, type TemplateResult } from "lit";
 import { live } from "lit/directives/live.js";
 
@@ -13,6 +14,7 @@ export function composerInput(options: {
 }): TemplateResult {
   return html`<textarea
     class="composer-input"
+    ${emojiCompletion(options.value)}
     dir="auto"
     rows="1"
     aria-label=${options.label ?? nothing}
