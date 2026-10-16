@@ -1,5 +1,6 @@
 import { PgBoss } from "pg-boss";
 import { createPgPool, type PgPool } from "../persistence/pg-pool.ts";
+import { sleep } from "../util/async.ts";
 import { errMessage } from "../util/errors.ts";
 
 export interface AutomationJobQueue<T> {
@@ -119,6 +120,7 @@ export function createPgBossAutomationQueue<T extends object>(
     async stopClaims() {
       started = false;
       await boss.offWork(options.name, { wait: false });
+      while (boss.getWipData().some((worker) => worker.name === options.name && worker.count === 0)) await sleep(10);
     },
     async stop() {
       started = false;
