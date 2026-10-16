@@ -4,7 +4,7 @@ import { rowForName } from "./emoji-picker";
 
 export type CompletionEmoji = EmojiRow & { url?: string; custom?: boolean };
 
-export function workspaceEmojiRows(catalog: Record<string, string>): CompletionEmoji[] {
+function workspaceEmojiRows(catalog: Record<string, string>): CompletionEmoji[] {
   const rows: CompletionEmoji[] = [];
   for (const name of Object.keys(catalog)) {
     if (!/^[a-zA-Z0-9_+-]+$/.test(name)) continue;

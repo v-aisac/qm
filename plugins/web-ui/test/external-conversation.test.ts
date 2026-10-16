@@ -53,7 +53,7 @@ test("historical hidden webhook prompts expose event data while other hidden pro
   const event = webhookEventOf({ text: wake });
   assert.equal(event?.action, "Review the deployment & report failures.");
   assert.equal(event?.deliveryId, "delivery-7");
-  assert.match(event!.payload, /<script>/);
+  assert.ok(event!.payload.includes("<script>"));
   const messages = entriesToMessages([
     entry(0, "user", { text: wake, hidden: true }),
     entry(1, "user", { text: "internal resume instruction", hidden: true }),

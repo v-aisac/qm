@@ -25,7 +25,7 @@ export function normalizeAutomationTitle(title: string | undefined): string | un
   return trimmed.length > 80 ? `${trimmed.slice(0, 79)}...` : trimmed;
 }
 
-export function automationPatch(patch: AutomationPatch): Partial<Automation> {
+function automationPatch(patch: AutomationPatch): Partial<Automation> {
   const fields: Partial<Automation> = {};
   if (patch.destination !== undefined) fields.destination = patch.destination;
   if (patch.title !== undefined) fields.title = normalizeAutomationTitle(patch.title);

@@ -7,17 +7,19 @@ test("webhook worklogs retain their title without appearing in the session bar",
     path: "/",
     listSessions: [
       {
-        id: "legacy-hook",
-        threadRef: "webhook:hook:old",
+        id: "untitled-hook",
+        threadRef: "external:untitled",
         scopeId: "personal:tester",
+        surface: "webhook",
         type: "dm",
         createdAt: Date.now(),
         title: null,
       },
       {
         id: "named-hook",
-        threadRef: "webhook:hook:new",
+        threadRef: "external:named",
         scopeId: "personal:tester",
+        surface: "webhook",
         type: "dm",
         createdAt: Date.now(),
         title: "Review deployments",
@@ -31,15 +33,27 @@ test("webhook worklogs retain their title without appearing in the session bar",
     await h.refreshSessions();
     h.releaseTranscript();
     await h.openSession({
-      id: "legacy-hook",
-      threadRef: "webhook:hook:old",
+      id: "untitled-hook",
+      threadRef: "external:untitled",
       scopeId: "personal:tester",
+      surface: "webhook",
       type: "dm",
       createdAt: Date.now(),
       title: null,
     });
-    assert.match(document.body.textContent ?? "", /Webhook run/);
-    assert.equal(document.querySelector('.session-row a[href="/s/legacy-hook"]'), null);
+    assert.match(h.mainText(), /Webhook run/);
+    assert.equal(document.querySelector('.session-row a[href="/s/untitled-hook"]'), null);
+    assert.equal(document.querySelector('.session-row a[href="/s/named-hook"]'), null);
+    await h.openSession({
+      id: "named-hook",
+      threadRef: "external:named",
+      scopeId: "personal:tester",
+      surface: "webhook",
+      type: "dm",
+      createdAt: Date.now(),
+      title: "Review deployments",
+    });
+    assert.match(h.mainText(), /Review deployments/);
     assert.equal(document.querySelector('.session-row a[href="/s/named-hook"]'), null);
   } finally {
     await h.close();

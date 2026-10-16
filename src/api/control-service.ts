@@ -208,7 +208,7 @@ export async function canAdministerCron(
   return (await app.artifactGrantPermission(cron.ownerScopeId, encodeRef(cronRef(cron.id)), actorId)) === "write";
 }
 
-export async function editWebhookTask(
+async function editWebhookTask(
   app: App,
   id: string,
   action: string,

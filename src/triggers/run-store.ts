@@ -255,13 +255,13 @@ export function createPostgresAutomationRunStore(connectionString: string): Auto
         ],
       },
       {
-        id: "automation/runs/0002-input",
+        id: "cron/fires/0002-input",
         statements: [
           "ALTER TABLE cron_fires ADD COLUMN IF NOT EXISTS payload TEXT, ADD COLUMN IF NOT EXISTS delivery_id TEXT",
         ],
       },
       {
-        id: "automation/runs/0003-webhook-history",
+        id: "cron/fires/0003-webhook-history",
         statements: [
           `DO $body$ BEGIN
             IF to_regclass('webhook_history') IS NOT NULL THEN

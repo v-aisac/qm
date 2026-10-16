@@ -17,7 +17,7 @@ export interface CreateWebhookInput extends CreateAutomationInput {
   filters?: Webhook["filters"];
 }
 
-export interface WebhookEvent {
+interface WebhookEvent {
   deliveryId: string;
   receivedAt: number;
   payload: string;

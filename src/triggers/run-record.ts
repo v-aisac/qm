@@ -2,9 +2,9 @@ import type { AutomationRun } from "../types.ts";
 import { errMessage, reportFailure } from "../util/errors.ts";
 import { runTrigger, type TriggerDeps, type TriggerSpec, type TriggerOutcome } from "./run-trigger.ts";
 
-export const RUN_DETAIL_MAX_CHARS = 2000;
+const RUN_DETAIL_MAX_CHARS = 2000;
 
-export function runDetail(text: string): string {
+function runDetail(text: string): string {
   return text.length <= RUN_DETAIL_MAX_CHARS ? text : `${text.slice(0, RUN_DETAIL_MAX_CHARS - 3)}...`;
 }
 

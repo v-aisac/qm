@@ -25,6 +25,8 @@ test("emoji completion converts names and accepts suggestions without sending", 
         party_blob: "https://emoji.slack-edge.com/test/blob.gif",
         yay_blob: "alias:party_blob",
         loop: "alias:loop",
+        broken: "alias:missing",
+        yay: "alias:thumbsup",
         unsafe: "javascript:alert(1)",
       },
     });
@@ -32,12 +34,13 @@ test("emoji completion converts names and accepts suggestions without sending", 
   try {
     const { render } = await server.ssrLoadModule("lit");
     const { composerInput } = await server.ssrLoadModule("/src/composer-input.ts");
-    const { workspaceEmojiRows } = await server.ssrLoadModule("/src/workspace-emoji.ts");
+    const { loadWorkspaceEmoji } = await server.ssrLoadModule("/src/workspace-emoji.ts");
+    const catalog = await loadWorkspaceEmoji();
     assert.deepEqual(
-      workspaceEmojiRows({ loop: "alias:loop", unsafe: "javascript:alert(1)", broken: "alias:missing" }),
-      [],
+      catalog.map((row: { n: string }) => row.n),
+      ["party_blob", "yay_blob", "yay"],
     );
-    assert.equal(workspaceEmojiRows({ yay: "alias:thumbsup" })[0].c, ":yay:");
+    assert.equal(catalog.find((row: { n: string }) => row.n === "yay").c, ":yay:");
     const root = dom.window.document.querySelector("#root")!;
     let draft = "";
     let sends = 0;
