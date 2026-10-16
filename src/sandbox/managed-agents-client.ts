@@ -106,7 +106,18 @@ export interface SdkManagedAgentsClientOptions {
 }
 
 const DEFAULT_API_BASE_URL = "https://api.digitalocean.com";
-const DEFAULT_TEMPLATE = "";
+// Our own registered DigitalOcean Managed Agents template (see droplet-1-
+// clicks's qm-24-04/files/srv/qm/managed-agents-sandbox-template/Dockerfile)
+// instead of DigitalOcean's own bare default — pins the sandbox's exact
+// Ubuntu 24.04/Node 20.20.2/glibc 2.39 toolchain explicitly, so it can't
+// silently drift away from this droplet's deploy-runtime image again (the
+// mismatch that caused the glibc-version bug this fork's other patches
+// address). Not an upstream-appropriate default — "qm-managed-agents-
+// sandbox" is a template name only this team's own DO account has
+// registered — so this change lives only on this droplet-pin branch, never
+// submitted upstream. An operator without that template registered under
+// this exact name would need to override via DO_AGENTS_TEMPLATE instead.
+const DEFAULT_TEMPLATE = "qm-managed-agents-sandbox";
 const DEFAULT_AGENT = "none";
 const DEFAULT_MAX_COMMAND_MS = 3600_000;
 const CREATE_TIMEOUT_MS = 120_000;
